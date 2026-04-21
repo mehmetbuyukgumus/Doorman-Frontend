@@ -37,6 +37,6 @@ jobs:
         uses: caprover/deploy-from-github@v1.1.2
         with:
           server: ${{ secrets.CAPROVER_SERVER }}
-          app-token: ${{ secrets.CAPROVER_TOKEN }}
-          app-name: "www"
-          image-name: "${{ secrets.DOCKERHUB_USERNAME }}/doorman-frontend:v${{ github.run_number }}"
+          token: ${{ secrets.CAPROVER_TOKEN }}
+          app: "www"
+          image: "${{ secrets.DOCKERHUB_USERNAME }}/doorman-frontend:v${{ github.run_number }}"
