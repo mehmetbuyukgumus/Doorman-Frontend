@@ -16,6 +16,9 @@ const researchListings = ref([]);
 const buyers = ref([]);
 const isEditingResearch = ref(false);
 
+const researchCurrentPage = ref(1);
+const researchItemsPerPage = ref(10);
+
 const editingResearchId = ref(null);
 const unreadMessagesCount = computed(
   () => contactMessages.value.filter((m) => !m.is_read).length,
@@ -32,7 +35,8 @@ const filteredResearchListings = computed(() => {
       item.address
         ?.toLowerCase()
         .includes(researchSearchQuery.value.toLowerCase()) ||
-      item.zip_code?.includes(researchSearchQuery.value);
+      item.zip_code?.includes(researchSearchQuery.value) ||
+      item.url?.toLowerCase().includes(researchSearchQuery.value.toLowerCase());
 
     // Price Range Filter
     const matchesMinPrice =
@@ -131,6 +135,21 @@ const filteredResearchListings = computed(() => {
   });
 
   return result;
+});
+
+const researchTotalPages = computed(() => {
+  return Math.ceil(filteredResearchListings.value.length / researchItemsPerPage.value);
+});
+
+const paginatedResearchListings = computed(() => {
+  const start = (researchCurrentPage.value - 1) * researchItemsPerPage.value;
+  const end = start + researchItemsPerPage.value;
+  return filteredResearchListings.value.slice(start, end);
+});
+
+// Reset pagination when search or filters change
+watch([researchSearchQuery, researchFilters, researchItemsPerPage], () => {
+  researchCurrentPage.value = 1;
 });
 
 const toggleResearchSort = (key) => {
@@ -2924,13 +2943,13 @@ onMounted(async () => {
                 <input
                   v-model="researchSearchQuery"
                   type="text"
-                  placeholder="Locaiton"
+                  placeholder="Quick Search"
                   class="filter-input"
                   style="
                     padding: 0.5rem 0.75rem;
                     border-radius: 8px;
                     border: 1px solid #eee;
-                    width: 140px;
+                    width: 200px;
                     font-size: 0.85rem;
                   "
                 />
@@ -2977,6 +2996,24 @@ onMounted(async () => {
                 >
                 Export
               </button>
+
+              <div class="items-per-page" style="margin-left: 0.5rem">
+                <select
+                  v-model="researchItemsPerPage"
+                  style="
+                    padding: 0.5rem;
+                    border-radius: 8px;
+                    border: 1px solid #eee;
+                    font-size: 0.85rem;
+                    background: white;
+                    cursor: pointer;
+                  "
+                >
+                  <option :value="10">10 / sayfa</option>
+                  <option :value="50">50 / sayfa</option>
+                  <option :value="100">100 / sayfa</option>
+                </select>
+              </div>
             </div>
           </div>
 
@@ -3037,7 +3074,7 @@ onMounted(async () => {
               </thead>
 
               <tbody>
-                <tr v-for="item in filteredResearchListings" :key="item.id">
+                <tr v-for="item in paginatedResearchListings" :key="item.id">
                   <td>€{{ Number(item.price).toLocaleString() }}</td>
                   <td>{{ item.square_meters }}m²</td>
                   <td>
@@ -3148,6 +3185,42 @@ onMounted(async () => {
                 </tr>
               </tbody>
             </table>
+          </div>
+
+          <!-- Pagination Controls -->
+          <div v-if="researchTotalPages > 1" class="pagination-wrapper" style="display: flex; justify-content: center; align-items: center; gap: 0.5rem; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #f3f4f6;">
+            <button 
+              @click="researchCurrentPage--" 
+              :disabled="researchCurrentPage === 1"
+              class="pagination-btn"
+              style="padding: 0.5rem 1rem; border: 1px solid #eee; background: white; border-radius: 6px; cursor: pointer; transition: all 0.2s;"
+              :style="researchCurrentPage === 1 ? 'opacity: 0.5; cursor: not-allowed;' : ''"
+            >
+              Previous
+            </button>
+            
+            <div class="page-numbers" style="display: flex; gap: 0.25rem;">
+              <button 
+                v-for="p in researchTotalPages" 
+                :key="p"
+                @click="researchCurrentPage = p"
+                class="pagination-btn"
+                style="min-width: 38px; padding: 0.5rem; border: 1px solid #eee; background: white; border-radius: 6px; cursor: pointer; transition: all 0.2s;"
+                :style="researchCurrentPage === p ? 'background: var(--primary); color: var(--accent); border-color: var(--primary); font-weight: 700;' : ''"
+              >
+                {{ p }}
+              </button>
+            </div>
+
+            <button 
+              @click="researchCurrentPage++" 
+              :disabled="researchCurrentPage === researchTotalPages"
+              class="pagination-btn"
+              style="padding: 0.5rem 1rem; border: 1px solid #eee; background: white; border-radius: 6px; cursor: pointer; transition: all 0.2s;"
+              :style="researchCurrentPage === researchTotalPages ? 'opacity: 0.5; cursor: not-allowed;' : ''"
+            >
+              Next
+            </button>
           </div>
         </section>
       </div>
@@ -3347,6 +3420,12 @@ onMounted(async () => {
 .submit-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  border-color: var(--primary) !important;
+  color: var(--primary);
+  background-color: #f9fafb !important;
 }
 
 .full-width {
