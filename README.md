@@ -35,22 +35,26 @@ Doorman v2 is a state-of-the-art, high-fidelity real estate and property managem
 ### Installation
 
 1. **Clone the repository**:
+
    ```bash
    git clone <repository-url>
    cd frontend
    ```
 
 2. **Install dependencies**:
+
    ```bash
    npm install
    ```
 
 3. **Configure Environment Variables**:
    Copy the example environment file and update the variables:
+
    ```bash
    cp .env.example .env
    ```
-   *Edit `.env` to point to your backend API.*
+
+   _Edit `.env` to point to your backend API._
 
 4. **Run development server**:
    ```bash
@@ -60,6 +64,7 @@ Doorman v2 is a state-of-the-art, high-fidelity real estate and property managem
 ## 📦 Deployment
 
 ### Docker
+
 The project includes a multi-stage `Dockerfile` for production-ready builds served via Nginx.
 
 ```bash
@@ -67,12 +72,12 @@ docker build -t doorman-frontend .
 ```
 
 ### Automatic CI/CD
+
 This project is configured with **GitHub Actions** for seamless delivery:
+
 1. Every push to `main` triggers a build.
 2. An image is automatically pushed to Docker Hub with unique version tags.
 3. The new version is automatically deployed to the **CapRover** server.
-
-*Ensure required secrets (`DOCKERHUB_TOKEN`, `CAPROVER_SERVER`, etc.) are configured in GitHub.*
 
 ## 📁 Project Structure
 
