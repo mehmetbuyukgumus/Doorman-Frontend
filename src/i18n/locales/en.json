@@ -1,0 +1,133 @@
+{
+    "nav": {
+        "buy": "Buy",
+        "rent": "Rent",
+        "services": "Services",
+        "blog": "Blog",
+        "contact": "Contact"
+    },
+    "hero": {
+        "title": "Curating Exceptional {br} {special} Lives",
+        "special": "Parisian",
+        "subtitle": "Discover the finest properties in France. Whether buying or renting, find a home that matches your definition of luxury.",
+        "search": {
+            "buy": "Buy",
+            "rent": "Rent",
+            "location": "Location",
+            "type": "Type",
+            "minPrice": "Min Price",
+            "maxPrice": "Max Price",
+            "rooms": "Rooms",
+            "btn": "SEARCH",
+            "any": "Any",
+            "studio": "Studio",
+            "locations": {
+                "all": "Île-de-France",
+                "marais": "Le Marais",
+                "stgermain": "Saint-Germain-des-Prés",
+                "neuilly": "Neuilly-sur-Seine",
+                "riviera": "French Riviera"
+            },
+            "types": {
+                "apartment": "Apartment",
+                "penthouse": "Penthouse",
+                "townhouse": "Townhouse",
+                "villa": "Villa"
+            },
+            "maxArea": "Max Area"
+        }
+    },
+    "portfolio": {
+        "label": "Portfolio",
+        "title": "Latest Acquisitions",
+        "viewAll": "View All Properties",
+        "exclusive": "Exclusive",
+        "priceOnRequest": "Price on Request"
+    },
+    "expertise": {
+        "label": "Our Expertise",
+        "title": "More than just real estate.{br} A dedicated partnership.",
+        "desc": "At Doorman, we accompany you through every step of your real estate journey. Whether you are looking to acquire a pied-à-terre, sell a family estate, or renovate a historic property, our consultants provide bespoke guidance tailored to the nuances of the French market.",
+        "sales": {
+            "title": "Sales & Acquisition",
+            "desc": "Strategic valuation, off-market access, and negotiation expertise."
+        },
+        "renovation": {
+            "title": "Renovation Consultancy",
+            "desc": "Project management and connection with France's finest artisans."
+        },
+        "contact": "Contact Our Team"
+    },
+    "blog": {
+        "label": "Blog",
+        "title": "Paris & France Real Estate Insights",
+        "readMore": "Read Article",
+        "tags": {
+            "trends": "Market Trends",
+            "architecture": "Architecture",
+            "investment": "Investment"
+        }
+    },
+    "footer": {
+        "desc": "Luxury Real Estate Agency specializing in prime properties in Paris and across France.",
+        "explore": "Explore",
+        "services": "Services",
+        "contact": "Contact",
+        "links": {
+            "sale": "Properties for Sale",
+            "rent": "Properties for Rent",
+            "developments": "New Developments",
+            "past": "Past Sold"
+        },
+        "serviceLinks": {
+            "eval": "Property Evaluation",
+            "reno": "Renovation",
+            "concierge": "Concierge",
+            "legal": "Legal & Tax"
+        },
+        "copyright": "© 2023 Doorman Real Estate. All rights reserved.",
+        "privacy": "Privacy Policy",
+        "terms": "Terms of Use"
+    },
+    "property": {
+        "bathrooms": "Bathrooms",
+        "parking": "Parking",
+        "balcony": "Balcony",
+        "cave": "Cave (Cellar)",
+        "energyClass": "Energy Class",
+        "description": "Description",
+        "location": "Approximate Location",
+        "contactBtn": "Engage Advisor",
+        "rooms": "{n} Rooms",
+        "forSale": "For Sale",
+        "forRent": "For Rent",
+        "sold": "Sold",
+        "rented": "Rented",
+        "transport": "Public Transport",
+        "elevator": "Elevator",
+        "floor": "Floor",
+        "floorOf": "Floor {floor} of {total}",
+        "groundFloor": "Ground Floor",
+        "topFloor": "Top Floor",
+        "availableNow": "Available Now",
+        "availableFrom": "Available from {date}",
+        "availability": "Availability"
+    },
+    "contact": {
+        "generalTitle": "Contact Our Advisors",
+        "inquiryTitle": "Inquiry: {title}",
+        "subtitle": "Please provide your details and our team will contact you within 24 hours.",
+        "name": "Full Name",
+        "email": "Email Address",
+        "phone": "Phone Number",
+        "message": "Message",
+        "sendBtn": "Send Message",
+        "generalPlaceholder": "How can we help you?",
+        "propPlaceholder": "I am interested in this property. I would like more information and a private viewing.",
+        "successTitle": "Message Sent",
+        "successMsg": "Thank you. Your inquiry has been received. Our team will contact you shortly.",
+        "close": "Close",
+        "errorMsg": "An error occurred. Please try again later.",
+        "connectionError": "Could not connect to the server."
+    }
+}

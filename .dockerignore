@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Dependencies (npm install will run in Docker)
+node_modules/
+
+# Build output
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Git
+.git/
+.gitignore

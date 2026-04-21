@@ -1,0 +1,133 @@
+{
+    "nav": {
+        "buy": "Acheter",
+        "rent": "Louer",
+        "services": "Services",
+        "blog": "Blog",
+        "contact": "Contact"
+    },
+    "hero": {
+        "title": "Cultiver des vies {br} {special} d'exception",
+        "special": "Parisiennes",
+        "subtitle": "Découvrez les plus belles propriétés de France. Que ce soit pour acheter ou louer, trouvez une demeure à la hauteur de votre définition du luxe.",
+        "search": {
+            "buy": "Acheter",
+            "rent": "Louer",
+            "location": "Localisation",
+            "type": "Type",
+            "minPrice": "Prix Min",
+            "maxPrice": "Prix Max",
+            "rooms": "Pièces",
+            "btn": "RECHERCHER",
+            "any": "Peu importe",
+            "studio": "Studio",
+            "locations": {
+                "all": "Île-de-France",
+                "marais": "Le Marais",
+                "stgermain": "Saint-Germain-des-Prés",
+                "neuilly": "Neuilly-sur-Seine",
+                "riviera": "Côte d'Azur"
+            },
+            "types": {
+                "apartment": "Appartement",
+                "penthouse": "Penthouse",
+                "townhouse": "Hôtel Particulier",
+                "villa": "Villa"
+            },
+            "maxArea": "Surface Max"
+        }
+    },
+    "portfolio": {
+        "label": "Portfolio",
+        "title": "Dernières Acquisitions",
+        "viewAll": "Voir toutes les propriétés",
+        "exclusive": "Exclusivité",
+        "priceOnRequest": "Prix sur demande"
+    },
+    "expertise": {
+        "label": "Notre Expertise",
+        "title": "Bien plus que de l'immobilier.{br} Un partenariat dédié.",
+        "desc": "Chez Doorman, nous vous accompagnons à chaque étape de votre parcours immobilier. Que vous cherchiez à acquérir un pied-à-terre, vendre un domaine familial ou rénover une propriété historique, nos consultants vous apportent un conseil sur mesure adapté aux nuances du marché français.",
+        "sales": {
+            "title": "Vente & Acquisition",
+            "desc": "Évaluation stratégique, accès off-market et expertise en négociation."
+        },
+        "renovation": {
+            "title": "Conseil en Rénovation",
+            "desc": "Gestion de projet et mise en relation avec les meilleurs artisans de France."
+        },
+        "contact": "Contacter notre équipe"
+    },
+    "journal": {
+        "label": "Blog",
+        "title": "Regards sur l'immobilier à Paris & en France",
+        "readMore": "Lire l'article",
+        "tags": {
+            "trends": "Tendances du Marché",
+            "architecture": "Architecture",
+            "investment": "Investissement"
+        }
+    },
+    "footer": {
+        "desc": "Agence immobilière de luxe spécialisée dans les propriétés de prestige à Paris et dans toute la France.",
+        "explore": "Explorer",
+        "services": "Services",
+        "contact": "Contact",
+        "links": {
+            "sale": "Propriétés à vendre",
+            "rent": "Propriétés à louer",
+            "developments": "Nouveaux développements",
+            "past": "Vendus"
+        },
+        "serviceLinks": {
+            "eval": "Évaluation immobilière",
+            "reno": "Rénovation",
+            "concierge": "Conciergerie",
+            "legal": "Juridique & Fiscal"
+        },
+        "copyright": "© 2023 Doorman Real Estate. Tous droits réservés.",
+        "privacy": "Politique de confidentialité",
+        "terms": "Conditions d'utilisation"
+    },
+    "property": {
+        "bathrooms": "Salles de bain",
+        "parking": "Parking",
+        "balcony": "Balcon",
+        "cave": "Cave",
+        "energyClass": "Classe Énergétique",
+        "description": "Description",
+        "location": "Emplacement Approximatif",
+        "contactBtn": "Contacter un conseiller",
+        "rooms": "{n} Pièces",
+        "forSale": "À Vendre",
+        "forRent": "À Louer",
+        "sold": "Vendu",
+        "rented": "Loué",
+        "transport": "Transports en Commun",
+        "elevator": "Ascenseur",
+        "floor": "Étage",
+        "floorOf": "Étage {floor} sur {total}",
+        "groundFloor": "Rez-de-chaussée",
+        "topFloor": "Dernier Étage",
+        "availableNow": "Disponible Immédiatement",
+        "availableFrom": "Disponible le {date}",
+        "availability": "Disponibilité"
+    },
+    "contact": {
+        "generalTitle": "Contacter nos conseillers",
+        "inquiryTitle": "Demande : {title}",
+        "subtitle": "Veuillez fournir vos coordonnées et notre équipe vous contactera dans les 24 heures.",
+        "name": "Nom Complet",
+        "email": "Adresse E-mail",
+        "phone": "Numéro de Téléphone",
+        "message": "Message",
+        "sendBtn": "Envoyer le message",
+        "generalPlaceholder": "Comment pouvons-nous vous aider ?",
+        "propPlaceholder": "Je suis intéressé par ce bien. J'aimerais obtenir plus d'informations et organiser une visite privée.",
+        "successTitle": "Message Envoyé",
+        "successMsg": "Merci. Votre demande a été reçue. Notre équipe vous contactera sous peu.",
+        "close": "Fermer",
+        "errorMsg": "Une erreur est survenue. Veuillez réessayer plus tard.",
+        "connectionError": "Impossible de se connecter au serveur."
+    }
+}

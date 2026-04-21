@@ -1,0 +1,133 @@
+{
+    "nav": {
+        "buy": "Satın Al",
+        "rent": "Kiralık",
+        "services": "Hizmetler",
+        "blog": "Blog",
+        "contact": "İletişim"
+    },
+    "hero": {
+        "title": "Sıradışı {special} {br} Yaşamlar Sunuyoruz",
+        "special": "Paris",
+        "subtitle": "Fransa'nın en seçkin mülklerini keşfedin. İster satın alın ister kiralayın, lüks tanımınıza uygun bir ev bulun.",
+        "search": {
+            "buy": "Satın Al",
+            "rent": "Kiralık",
+            "location": "Konum",
+            "type": "Tip",
+            "minPrice": "Min Fiyat",
+            "maxPrice": "Max Fiyat",
+            "rooms": "Oda Sayısı",
+            "btn": "ARA",
+            "any": "Farketmez",
+            "studio": "Stüdyo",
+            "locations": {
+                "all": "Île-de-France",
+                "marais": "Le Marais",
+                "stgermain": "Saint-Germain-des-Prés",
+                "neuilly": "Neuilly-sur-Seine",
+                "riviera": "Fransız Rivierası"
+            },
+            "types": {
+                "apartment": "Daire",
+                "penthouse": "Penthouse",
+                "townhouse": "Müstakil Ev",
+                "villa": "Villa"
+            },
+            "maxArea": "Max Alan"
+        }
+    },
+    "portfolio": {
+        "label": "Portföy",
+        "title": "Son Portföyler",
+        "viewAll": "Tüm Mülkleri Görüntüle",
+        "exclusive": "Özel",
+        "priceOnRequest": "Fiyat Sorunuz"
+    },
+    "expertise": {
+        "label": "Uzmanlığımız",
+        "title": "Gayrimenkulden daha fazlası.{br} Özel bir ortaklık.",
+        "desc": "Doorman'da gayrimenkul yolculuğunuzun her adımında size eşlik ediyoruz. İster bir konak edinmek, ister bir aile mülkünü satmak veya tarihi bir mülkü restore etmek isteyin, danışmanlarımız Fransız pazarının inceliklerine göre hazırlanmış size özel rehberlik sağlar.",
+        "sales": {
+            "title": "Satış ve Edinme",
+            "desc": "Stratejik değerleme, pazar dışı erişim ve müzakere uzmanlığı."
+        },
+        "renovation": {
+            "title": "Restorasyon Danışmanlığı",
+            "desc": "Proje yönetimi ve Fransa'nın en iyi ustalarıyla bağlantı."
+        },
+        "contact": "Ekibimizle İletişime Geçin"
+    },
+    "blog": {
+        "label": "Blog",
+        "title": "Paris ve Fransa Emlak Bilgileri",
+        "readMore": "Makaleyi Oku",
+        "tags": {
+            "trends": "Pazar Trendleri",
+            "architecture": "Mimari",
+            "investment": "Yatırım"
+        }
+    },
+    "footer": {
+        "desc": "Paris ve Fransa genelindeki seçkin mülklerde uzmanlaşmış lüks emlak ajansı.",
+        "explore": "Keşfet",
+        "services": "Hizmetler",
+        "contact": "İletişim",
+        "links": {
+            "sale": "Satılık Mülkler",
+            "rent": "Kiralık Mülkler",
+            "developments": "Yeni Projeler",
+            "past": "Satılanlar"
+        },
+        "serviceLinks": {
+            "eval": "Mülk Değerleme",
+            "reno": "Restorasyon",
+            "concierge": "Concierge",
+            "legal": "Hukuki ve Vergi"
+        },
+        "copyright": "© 2023 Doorman Emlak. Tüm hakları saklıdır.",
+        "privacy": "Gizlilik Politikası",
+        "terms": "Kullanım Koşulları"
+    },
+    "property": {
+        "bathrooms": "Banyo",
+        "parking": "Otopark",
+        "balcony": "Balkon",
+        "cave": "Mahzen / Depo",
+        "energyClass": "Enerji Sınıfı",
+        "description": "Açıklama",
+        "location": "Tahmini Konum",
+        "contactBtn": "Danışmana Bağlan",
+        "rooms": "{n} Oda",
+        "forSale": "Satılık",
+        "forRent": "Kiralık",
+        "sold": "Satıldı",
+        "rented": "Kiralandı",
+        "transport": "Toplu Taşıma",
+        "elevator": "Asansör",
+        "floor": "Kat",
+        "floorOf": "{total} katlı binanın {floor}. katı",
+        "groundFloor": "Giriş Katı",
+        "topFloor": "En Üst Kat",
+        "availableNow": "Hemen Müsait",
+        "availableFrom": "{date} tarihinden itibaren müsait",
+        "availability": "Müsaitlik"
+    },
+    "contact": {
+        "generalTitle": "Danışmanlarımıza Ulaşın",
+        "inquiryTitle": "Talep: {title}",
+        "subtitle": "Lütfen bilgilerinizi paylaşın, ekibimiz 24 saat içinde sizinle iletişime geçecektir.",
+        "name": "Ad Soyad",
+        "email": "E-posta Adresi",
+        "phone": "Telefon Numarası",
+        "message": "Mesaj",
+        "sendBtn": "Mesaj Gönder",
+        "generalPlaceholder": "Size nasıl yardımcı olabiliriz?",
+        "propPlaceholder": "Bu mülkle ilgileniyorum. Daha fazla bilgi almak ve özel bir randevu oluşturmak istiyorum.",
+        "successTitle": "Mesaj Gönderildi",
+        "successMsg": "Teşekkür ederiz. Mesajınız başarıyla iletildi. Ekibimiz en kısa sürede sizinle iletişime geçecektir.",
+        "close": "Kapat",
+        "errorMsg": "Bir hata oluştu. Lütfen daha sonra tekrar deneyiniz.",
+        "connectionError": "Sunucuya bağlanılamadı."
+    }
+}
