@@ -1067,6 +1067,15 @@ const fetchResearchListings = async () => {
 };
 
 const addResearchListing = async () => {
+  // URL uniqueness check
+  const exists = researchListings.value.some(
+    (l) => l.url.toLowerCase().trim() === newResearch.value.url.toLowerCase().trim()
+  );
+  if (exists) {
+    alert("This URL already exists in the research list! / Bu URL zaten listede mevcut!");
+    return;
+  }
+
   const token = localStorage.getItem("admin_token");
   try {
     const res = await fetch(`${backendUrl}/admin/research-listings/`, {
@@ -1125,6 +1134,17 @@ const cancelEditResearch = () => {
 };
 
 const updateResearchListing = async () => {
+  // URL uniqueness check
+  const exists = researchListings.value.some(
+    (l) =>
+      l.url.toLowerCase().trim() === newResearch.value.url.toLowerCase().trim() &&
+      l.id !== editingResearchId.value
+  );
+  if (exists) {
+    alert("This URL already exists in another listing! / Bu URL başka bir kayıtta zaten mevcut!");
+    return;
+  }
+
   const token = localStorage.getItem("admin_token");
   try {
     const res = await fetch(
