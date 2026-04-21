@@ -8,6 +8,13 @@ import * as XLSX from "xlsx";
 
 const { t } = useI18n();
 const router = useRouter();
+
+// 1. Auth & Identity
+const userRole = computed(() => localStorage.getItem("admin_role") || "editor");
+const isSuperuser = computed(() => userRole.value === "superuser");
+const userEmail = computed(() => localStorage.getItem("admin_email"));
+
+// 2. Basic Data Refs
 const properties = ref([]);
 const blogPosts = ref([]);
 const users = ref([]);
@@ -16,10 +23,28 @@ const researchListings = ref([]);
 const buyers = ref([]);
 const isEditingResearch = ref(false);
 
+// 3. Research State & Filters
 const researchCurrentPage = ref(1);
 const researchItemsPerPage = ref(10);
-
 const editingResearchId = ref(null);
+const showResearchFilterModal = ref(false);
+const researchSearchQuery = ref("");
+const researchFilters = ref({
+  minPrice: null,
+  maxPrice: null,
+  minArea: null,
+  maxArea: null,
+  minPricePerSqm: null,
+  maxPricePerSqm: null,
+  minRooms: null,
+  maxRooms: null,
+  buyerIds: [],
+  tagIds: [],
+  startDate: null,
+  endDate: null,
+});
+const researchSortKey = ref("created_at");
+const researchSortOrder = ref("desc");
 const unreadMessagesCount = computed(
   () => contactMessages.value.filter((m) => !m.is_read).length,
 );
@@ -31,12 +56,12 @@ const filteredResearchListings = computed(() => {
       !researchSearchQuery.value ||
       item.neighborhood
         ?.toLowerCase()
-        .includes(researchSearchQuery.value.toLowerCase()) ||
+        ?.includes(researchSearchQuery.value.toLowerCase()) ||
       item.address
         ?.toLowerCase()
-        .includes(researchSearchQuery.value.toLowerCase()) ||
+        ?.includes(researchSearchQuery.value.toLowerCase()) ||
       item.zip_code?.includes(researchSearchQuery.value) ||
-      item.url?.toLowerCase().includes(researchSearchQuery.value.toLowerCase());
+      item.url?.toLowerCase()?.includes(researchSearchQuery.value.toLowerCase());
 
     // Price Range Filter
     const matchesMinPrice =
@@ -198,22 +223,6 @@ const exportToExcel = () => {
 const isLoading = ref(true);
 const activeTab = ref("properties"); // properties, blogs, users, messages
 
-const showResearchFilterModal = ref(false);
-const researchSearchQuery = ref("");
-const researchFilters = ref({
-  minPrice: null,
-  maxPrice: null,
-  minArea: null,
-  maxArea: null,
-  minPricePerSqm: null,
-  maxPricePerSqm: null,
-  minRooms: null,
-  maxRooms: null,
-  buyerIds: [],
-  tagIds: [],
-  startDate: null,
-  endDate: null,
-});
 
 
 const resetResearchFilters = () => {
@@ -235,8 +244,6 @@ const resetResearchFilters = () => {
 };
 
 
-const researchSortKey = ref("created_at"); // price, price_per_sqm, rooms, square_meters, created_at
-const researchSortOrder = ref("desc"); // asc, desc
 const tags = ref([]);
 const newTagName = ref("");
 const backendUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -281,9 +288,6 @@ const toolbarOptions = [
   ["link", "image", "clean"],
 ];
 
-const userRole = computed(() => localStorage.getItem("admin_role") || "editor");
-const isSuperuser = computed(() => userRole.value === "superuser");
-const userEmail = computed(() => localStorage.getItem("admin_email"));
 
 const canManagePost = (post) => {
   if (isSuperuser.value) return true;
