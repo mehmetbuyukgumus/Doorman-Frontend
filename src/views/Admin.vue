@@ -759,9 +759,17 @@ const deleteBlogPost = async (id) => {
     if (res.ok) {
       await fetchBlogPosts();
     } else {
-      alert("Failed to delete blog post.");
+      let errorDetail = "An error occurred";
+      try {
+        const errorData = await res.json();
+        errorDetail = errorData.detail || errorDetail;
+      } catch (e) {
+        errorDetail = `Server error (${res.status}): ${res.statusText}`;
+      }
+      alert(`Error: ${errorDetail}`);
     }
   } catch (err) {
+    console.error("Delete blog post error:", err);
     alert("Network error.");
   }
 };
@@ -782,9 +790,17 @@ const deleteProperty = async (id) => {
       await fetchProperties();
     } else {
       if (res.status === 401) return handleLogout();
-      alert("Failed to delete.");
+      let errorDetail = "An error occurred";
+      try {
+        const errorData = await res.json();
+        errorDetail = errorData.detail || errorDetail;
+      } catch (e) {
+        errorDetail = `Server error (${res.status}): ${res.statusText}`;
+      }
+      alert(`Error: ${errorDetail}`);
     }
   } catch (err) {
+    console.error("Delete property error:", err);
     alert("Network error.");
   }
 };
@@ -818,11 +834,18 @@ const deleteAdminUser = async (id, email) => {
       alert("User deleted successfully.");
     } else {
       if (res.status === 401) return handleLogout();
-      const errorData = await res.json();
-      alert(`Error: ${errorData.detail}`);
+      let errorDetail = "An error occurred";
+      try {
+        const errorData = await res.json();
+        errorDetail = errorData.detail || errorDetail;
+      } catch (e) {
+        errorDetail = `Server error (${res.status}): ${res.statusText}`;
+      }
+      alert(`Error: ${errorDetail}`);
     }
   } catch (err) {
-    alert("Network error.");
+    console.error("Delete error:", err);
+    alert("Network error. Please check your connection or server status.");
   }
 };
 
@@ -1186,8 +1209,18 @@ const deleteResearchListing = async (id) => {
     if (res.ok) {
       await fetchResearchListings();
       alert("Research listing deleted!");
+    } else {
+      let errorDetail = "An error occurred";
+      try {
+        const errorData = await res.json();
+        errorDetail = errorData.detail || errorDetail;
+      } catch (e) {
+        errorDetail = `Server error (${res.status}): ${res.statusText}`;
+      }
+      alert(`Error: ${errorDetail}`);
     }
   } catch (err) {
+    console.error("Delete research error:", err);
     alert("Network error.");
   }
 };
