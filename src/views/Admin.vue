@@ -264,7 +264,7 @@ const resetResearchFilters = () => {
 
 const tags = ref([]);
 const newTagName = ref("");
-const backendUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const backendUrl = (import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
 const transportOptions = [
   "Metro 1",
@@ -520,7 +520,7 @@ const fetchUsers = async () => {
   if (!isSuperuser.value) return;
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/users`, {
+    const res = await fetch(`${backendUrl}/admin/users/`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.status === 401) return handleLogout();
@@ -902,7 +902,7 @@ const deleteAdminUser = async (id, email) => {
 
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/users/${id}`, {
+    const res = await fetch(`${backendUrl}/admin/users/${id}/`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -929,7 +929,7 @@ const deleteAdminUser = async (id, email) => {
 const createAdminUser = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/users`, {
+    const res = await fetch(`${backendUrl}/admin/users/`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

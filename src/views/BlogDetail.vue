@@ -8,7 +8,7 @@ const route = useRoute();
 const { t, locale } = useI18n();
 const post = ref(null);
 const isLoading = ref(true);
-const backendUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const backendUrl = (import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
 const fetchPost = async () => {
   try {
