@@ -264,7 +264,7 @@ const resetResearchFilters = () => {
 
 const tags = ref([]);
 const newTagName = ref("");
-const backendUrl = (import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "");
+const backendUrl = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 
 const transportOptions = [
   "Metro 1",
@@ -534,7 +534,7 @@ const fetchInvestors = async () => {
   if (!isSuperuser.value) return;
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/investors/`, {
+    const res = await fetch(`${backendUrl}/admin/investors`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.status === 401) return handleLogout();
@@ -547,7 +547,7 @@ const fetchInvestors = async () => {
 const addInvestor = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/investors/`, {
+    const res = await fetch(`${backendUrl}/admin/investors`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -572,7 +572,7 @@ const deleteInvestor = async (id) => {
   if (!confirm("Are you sure you want to delete this investor?")) return;
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/investors/${id}/`, {
+    const res = await fetch(`${backendUrl}/admin/investors/${id}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
     });
