@@ -18,6 +18,7 @@ const userEmail = computed(() => localStorage.getItem("admin_email"));
 const properties = ref([]);
 const blogPosts = ref([]);
 const users = ref([]);
+const investors = ref([]);
 const contactMessages = ref([]);
 const researchListings = ref([]);
 const buyers = ref([]);
@@ -61,7 +62,9 @@ const filteredResearchListings = computed(() => {
         ?.toLowerCase()
         ?.includes(researchSearchQuery.value.toLowerCase()) ||
       item.zip_code?.includes(researchSearchQuery.value) ||
-      item.url?.toLowerCase()?.includes(researchSearchQuery.value.toLowerCase());
+      item.url
+        ?.toLowerCase()
+        ?.includes(researchSearchQuery.value.toLowerCase());
 
     // Price Range Filter
     const matchesMinPrice =
@@ -140,7 +143,6 @@ const filteredResearchListings = computed(() => {
       matchesTags &&
       matchesDate
     );
-
   });
 
   // Sorting
@@ -163,7 +165,9 @@ const filteredResearchListings = computed(() => {
 });
 
 const researchTotalPages = computed(() => {
-  return Math.ceil(filteredResearchListings.value.length / researchItemsPerPage.value);
+  return Math.ceil(
+    filteredResearchListings.value.length / researchItemsPerPage.value,
+  );
 });
 
 const paginatedResearchListings = computed(() => {
@@ -207,7 +211,7 @@ const exportToExcel = () => {
 
     URL: item.url,
     "Internal Notes": item.internal_notes || "-",
-    "Date Added": new Date(item.created_at).toLocaleDateString(),
+    "Date Added": new Date(item.created_at).toLocaleDateString("en-US"),
     "Added By": item.created_by?.full_name || item.created_by?.email || "-",
   }));
 
@@ -221,9 +225,24 @@ const exportToExcel = () => {
 };
 
 const isLoading = ref(true);
-const activeTab = ref("properties"); // properties, blogs, users, messages
+const activeTab = ref("properties"); // properties, blogs, users, messages, research, mail
+const selectedListingForMail = ref(null);
+const mailRecipientType = ref("all"); // 'all' or 'selected'
+const selectedInvestorIds = ref([]);
+const investorSearchQuery = ref("");
+const mailImageUrl = ref("");
+const mailAdditionalMessage = ref("");
+const sendingMail = ref(false);
 
-
+const filteredInvestorsForMail = computed(() => {
+  if (!investorSearchQuery.value) return investors.value;
+  const q = investorSearchQuery.value.toLowerCase();
+  return investors.value.filter(
+    (i) =>
+      i.full_name.toLowerCase().includes(q) ||
+      i.email.toLowerCase().includes(q),
+  );
+});
 
 const resetResearchFilters = () => {
   researchSearchQuery.value = "";
@@ -242,7 +261,6 @@ const resetResearchFilters = () => {
     endDate: null,
   };
 };
-
 
 const tags = ref([]);
 const newTagName = ref("");
@@ -287,7 +305,6 @@ const toolbarOptions = [
   [{ color: [] }, { background: [] }],
   ["link", "image", "clean"],
 ];
-
 
 const canManagePost = (post) => {
   if (isSuperuser.value) return true;
@@ -341,6 +358,10 @@ const newUser = ref({
   email: "",
   full_name: "",
   role: "editor",
+});
+const newInvestor = ref({
+  full_name: "",
+  email: "",
 });
 const passwordResets = ref([]);
 
@@ -506,6 +527,62 @@ const fetchUsers = async () => {
     users.value = await res.json();
   } catch (err) {
     console.error("Failed to fetch users", err);
+  }
+};
+
+const fetchInvestors = async () => {
+  if (!isSuperuser.value) return;
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/admin/investors/`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401) return handleLogout();
+    investors.value = await res.json();
+  } catch (err) {
+    console.error("Failed to fetch investors", err);
+  }
+};
+
+const addInvestor = async () => {
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/admin/investors/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(newInvestor.value),
+    });
+    if (res.ok) {
+      await fetchInvestors();
+      alert("Investor added successfully!");
+      newInvestor.value = { full_name: "", email: "" };
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.detail}`);
+    }
+  } catch (err) {
+    alert("Network error.");
+  }
+};
+
+const deleteInvestor = async (id) => {
+  if (!confirm("Are you sure you want to delete this investor?")) return;
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/admin/investors/${id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok) {
+      await fetchInvestors();
+    } else {
+      alert("Delete failed.");
+    }
+  } catch (err) {
+    alert("Network error.");
   }
 };
 
@@ -1092,10 +1169,13 @@ const fetchResearchListings = async () => {
 const addResearchListing = async () => {
   // URL uniqueness check
   const exists = researchListings.value.some(
-    (l) => l.url.toLowerCase().trim() === newResearch.value.url.toLowerCase().trim()
+    (l) =>
+      l.url.toLowerCase().trim() === newResearch.value.url.toLowerCase().trim(),
   );
   if (exists) {
-    alert("This URL already exists in the research list! / Bu URL zaten listede mevcut!");
+    alert(
+      "This URL already exists in the research list! / Bu URL zaten listede mevcut!",
+    );
     return;
   }
 
@@ -1160,11 +1240,14 @@ const updateResearchListing = async () => {
   // URL uniqueness check
   const exists = researchListings.value.some(
     (l) =>
-      l.url.toLowerCase().trim() === newResearch.value.url.toLowerCase().trim() &&
-      l.id !== editingResearchId.value
+      l.url.toLowerCase().trim() ===
+        newResearch.value.url.toLowerCase().trim() &&
+      l.id !== editingResearchId.value,
   );
   if (exists) {
-    alert("This URL already exists in another listing! / Bu URL başka bir kayıtta zaten mevcut!");
+    alert(
+      "This URL already exists in another listing! / Bu URL başka bir kayıtta zaten mevcut!",
+    );
     return;
   }
 
@@ -1328,6 +1411,64 @@ const deleteResearchTag = async (id) => {
   }
 };
 
+const prepareMail = (listing) => {
+  selectedListingForMail.value = listing;
+  mailImageUrl.value = ""; // Reset image URL for each new mail
+  mailAdditionalMessage.value = listing.internal_notes || "";
+  activeTab.value = "mail";
+};
+
+const sendMailToInvestors = async () => {
+  if (!selectedListingForMail.value) return;
+
+  const recipientLabel =
+    mailRecipientType.value === "all"
+      ? "ALL registered investors"
+      : `${selectedInvestorIds.value.length} selected investors`;
+
+  if (
+    !confirm(`Are you sure you want to send this mail to ${recipientLabel}?`)
+  ) {
+    return;
+  }
+
+  sendingMail.value = true;
+  try {
+    const response = await fetch(
+      `${backendUrl}/admin/research-listings/send-mail/`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+        },
+        body: JSON.stringify({
+          listing_id: selectedListingForMail.value.id,
+          image_url: mailImageUrl.value,
+          additional_message: mailAdditionalMessage.value,
+          investor_ids:
+            mailRecipientType.value === "selected"
+              ? selectedInvestorIds.value
+              : null,
+        }),
+      },
+    );
+
+    const data = await response.json();
+    if (response.ok) {
+      alert(data.message || "Mails sent successfully!");
+      // Optional: Redirect back to research or clear staging
+    } else {
+      throw new Error(data.detail || "Failed to send mails");
+    }
+  } catch (error) {
+    console.error("Error sending mail:", error);
+    alert(error.message);
+  } finally {
+    sendingMail.value = false;
+  }
+};
+
 onMounted(async () => {
   fetchProperties();
   fetchBlogPosts();
@@ -1339,6 +1480,7 @@ onMounted(async () => {
   if (isSuperuser.value) {
     fetchUsers();
     fetchPasswordResets();
+    fetchInvestors();
   }
 });
 </script>
@@ -1388,6 +1530,13 @@ onMounted(async () => {
           :class="{ active: activeTab === 'users' }"
         >
           User Management
+        </button>
+        <button
+          v-if="isSuperuser"
+          @click="activeTab = 'mail'"
+          :class="{ active: activeTab === 'mail' }"
+        >
+          Send Mail
         </button>
         <button
           @click="activeTab = 'messages'"
@@ -1807,7 +1956,7 @@ onMounted(async () => {
                   <td>
                     <span class="audit-date" v-if="prop.created_at">
                       {{
-                        new Date(prop.created_at).toLocaleDateString("tr-TR")
+                        new Date(prop.created_at).toLocaleDateString("en-US")
                       }}
                     </span>
                   </td>
@@ -2058,7 +2207,9 @@ onMounted(async () => {
                     </span>
                   </td>
                   <td>
-                    {{ new Date(post.published_at).toLocaleDateString() }}
+                    {{
+                      new Date(post.published_at).toLocaleDateString("en-US")
+                    }}
                   </td>
                   <td>
                     <span
@@ -2147,7 +2298,9 @@ onMounted(async () => {
               <tbody>
                 <tr v-for="req in passwordResets" :key="req.id">
                   <td>{{ req.user.email }}</td>
-                  <td>{{ new Date(req.created_at).toLocaleDateString() }}</td>
+                  <td>
+                    {{ new Date(req.created_at).toLocaleDateString("en-US") }}
+                  </td>
                   <td>
                     <button
                       @click="approvePasswordReset(req.id)"
@@ -2236,13 +2389,86 @@ onMounted(async () => {
             </table>
           </div>
         </section>
+
+        <!-- INVESTOR MANAGEMENT (Superuser Only) -->
+        <section class="admin-section card" style="margin-top: 2rem">
+          <h2 class="section-subtitle">Investor Management</h2>
+          <form
+            @submit.prevent="addInvestor"
+            class="admin-form"
+            style="margin-bottom: 2rem"
+          >
+            <div class="form-grid">
+              <div class="form-field">
+                <label>Full Name</label>
+                <input
+                  v-model="newInvestor.full_name"
+                  type="text"
+                  required
+                  placeholder="Name Surname"
+                />
+              </div>
+              <div class="form-field">
+                <label>Email</label>
+                <input
+                  v-model="newInvestor.email"
+                  type="email"
+                  required
+                  placeholder="email@example.com"
+                />
+              </div>
+            </div>
+            <button
+              type="submit"
+              class="submit-btn"
+              style="margin-top: 1rem; width: auto; padding: 0.8rem 2rem"
+            >
+              Add Investor
+            </button>
+          </form>
+
+          <div class="property-list">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Added At</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="investor in investors" :key="investor.id">
+                  <td>{{ investor.full_name }}</td>
+                  <td>{{ investor.email }}</td>
+                  <td>
+                    {{
+                      new Date(investor.created_at).toLocaleDateString("en-US")
+                    }}
+                  </td>
+                  <td>
+                    <button
+                      @click="deleteInvestor(investor.id)"
+                      class="delete-btn"
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+                <tr v-if="investors.length === 0">
+                  <td colspan="4" class="empty-msg">No investors added yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
         <!-- BUYER MANAGEMENT (Superuser Only) -->
         <section
           v-if="isSuperuser"
           class="admin-section card"
           style="margin-top: 2rem"
         >
-          <h2 class="section-subtitle">Buyer Management (Alıcılar)</h2>
+          <h2 class="section-subtitle">Buyer Management</h2>
           <form
             @submit.prevent="addBuyer"
             class="admin-form"
@@ -2630,7 +2856,9 @@ onMounted(async () => {
                       {{ msg.is_read ? "Read" : "Unread" }}
                     </span>
                   </td>
-                  <td>{{ new Date(msg.created_at).toLocaleDateString() }}</td>
+                  <td>
+                    {{ new Date(msg.created_at).toLocaleDateString("en-US") }}
+                  </td>
                   <td>
                     <strong>{{ msg.name }}</strong
                     ><br />
@@ -3174,7 +3402,7 @@ onMounted(async () => {
                   </td>
 
                   <td style="font-size: 0.8rem">
-                    {{ new Date(item.created_at).toLocaleDateString() }}
+                    {{ new Date(item.created_at).toLocaleDateString("en-US") }}
                   </td>
 
                   <td>
@@ -3219,6 +3447,20 @@ onMounted(async () => {
                       >
                         Delete
                       </button>
+                      <button
+                        v-if="isSuperuser"
+                        @click="prepareMail(item)"
+                        class="action-btn publish-btn"
+                        style="
+                          padding: 4px 8px;
+                          font-size: 0.75rem;
+                          width: 100%;
+                          background: var(--primary);
+                          color: var(--accent);
+                        "
+                      >
+                        Send
+                      </button>
                       <span
                         v-if="!isSuperuser"
                         class="no-perms"
@@ -3245,39 +3487,534 @@ onMounted(async () => {
           </div>
 
           <!-- Pagination Controls -->
-          <div v-if="researchTotalPages > 1" class="pagination-wrapper" style="display: flex; justify-content: center; align-items: center; gap: 0.5rem; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #f3f4f6;">
-            <button 
-              @click="researchCurrentPage--" 
+          <div
+            v-if="researchTotalPages > 1"
+            class="pagination-wrapper"
+            style="
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              gap: 0.5rem;
+              margin-top: 2rem;
+              padding-top: 1rem;
+              border-top: 1px solid #f3f4f6;
+            "
+          >
+            <button
+              @click="researchCurrentPage--"
               :disabled="researchCurrentPage === 1"
               class="pagination-btn"
-              style="padding: 0.5rem 1rem; border: 1px solid #eee; background: white; border-radius: 6px; cursor: pointer; transition: all 0.2s;"
-              :style="researchCurrentPage === 1 ? 'opacity: 0.5; cursor: not-allowed;' : ''"
+              style="
+                padding: 0.5rem 1rem;
+                border: 1px solid #eee;
+                background: white;
+                border-radius: 6px;
+                cursor: pointer;
+                transition: all 0.2s;
+              "
+              :style="
+                researchCurrentPage === 1
+                  ? 'opacity: 0.5; cursor: not-allowed;'
+                  : ''
+              "
             >
               Previous
             </button>
-            
-            <div class="page-numbers" style="display: flex; gap: 0.25rem;">
-              <button 
-                v-for="p in researchTotalPages" 
+
+            <div class="page-numbers" style="display: flex; gap: 0.25rem">
+              <button
+                v-for="p in researchTotalPages"
                 :key="p"
                 @click="researchCurrentPage = p"
                 class="pagination-btn"
-                style="min-width: 38px; padding: 0.5rem; border: 1px solid #eee; background: white; border-radius: 6px; cursor: pointer; transition: all 0.2s;"
-                :style="researchCurrentPage === p ? 'background: var(--primary); color: var(--accent); border-color: var(--primary); font-weight: 700;' : ''"
+                style="
+                  min-width: 38px;
+                  padding: 0.5rem;
+                  border: 1px solid #eee;
+                  background: white;
+                  border-radius: 6px;
+                  cursor: pointer;
+                  transition: all 0.2s;
+                "
+                :style="
+                  researchCurrentPage === p
+                    ? 'background: var(--primary); color: var(--accent); border-color: var(--primary); font-weight: 700;'
+                    : ''
+                "
               >
                 {{ p }}
               </button>
             </div>
 
-            <button 
-              @click="researchCurrentPage++" 
+            <button
+              @click="researchCurrentPage++"
               :disabled="researchCurrentPage === researchTotalPages"
               class="pagination-btn"
-              style="padding: 0.5rem 1rem; border: 1px solid #eee; background: white; border-radius: 6px; cursor: pointer; transition: all 0.2s;"
-              :style="researchCurrentPage === researchTotalPages ? 'opacity: 0.5; cursor: not-allowed;' : ''"
+              style="
+                padding: 0.5rem 1rem;
+                border: 1px solid #eee;
+                background: white;
+                border-radius: 6px;
+                cursor: pointer;
+                transition: all 0.2s;
+              "
+              :style="
+                researchCurrentPage === researchTotalPages
+                  ? 'opacity: 0.5; cursor: not-allowed;'
+                  : ''
+              "
             >
               Next
             </button>
+          </div>
+        </section>
+      </div>
+
+      <!-- SEND MAIL SECTION (Superuser Only) -->
+      <div v-if="activeTab === 'mail' && isSuperuser" class="tab-content">
+        <section class="admin-section card">
+          <h2 class="section-subtitle">Send Research Property to Investors</h2>
+
+          <div
+            v-if="!selectedListingForMail"
+            class="empty-msg"
+            style="padding: 2rem; text-align: center"
+          >
+            Please select a property from the Research tab first using the
+            "Send" button.
+          </div>
+
+          <div v-else>
+            <div
+              class="mail-editor-grid"
+              style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem"
+            >
+              <!-- Selection & Settings -->
+              <div class="mail-settings">
+                <div style="margin-top: 1rem">
+                  <h3
+                    style="
+                      margin-bottom: 1rem;
+                      font-size: 1rem;
+                      color: var(--primary);
+                    "
+                  >
+                    1. Recipient Selection
+                  </h3>
+                  <div style="display: flex; gap: 1.5rem; margin-bottom: 1rem">
+                    <label
+                      style="
+                        display: flex;
+                        align-items: center;
+                        gap: 0.5rem;
+                        cursor: pointer;
+                        font-size: 0.9rem;
+                      "
+                    >
+                      <input
+                        type="radio"
+                        v-model="mailRecipientType"
+                        value="all"
+                      />
+                      All Registered Investors
+                    </label>
+                    <label
+                      style="
+                        display: flex;
+                        align-items: center;
+                        gap: 0.5rem;
+                        cursor: pointer;
+                        font-size: 0.9rem;
+                      "
+                    >
+                      <input
+                        type="radio"
+                        v-model="mailRecipientType"
+                        value="selected"
+                      />
+                      Selective Send
+                    </label>
+                  </div>
+
+                  <div
+                    v-if="mailRecipientType === 'selected'"
+                    style="
+                      border: 1px solid #eee;
+                      border-radius: 8px;
+                      padding: 1rem;
+                      background: #fafafa;
+                      margin-bottom: 1.5rem;
+                    "
+                  >
+                    <input
+                      v-model="investorSearchQuery"
+                      type="text"
+                      placeholder="Search investors (name or email)..."
+                      style="
+                        width: 100%;
+                        padding: 0.6rem;
+                        border: 1px solid #ddd;
+                        border-radius: 6px;
+                        margin-bottom: 0.8rem;
+                        font-size: 0.9rem;
+                      "
+                    />
+                    <div
+                      style="
+                        max-height: 200px;
+                        overflow-y: auto;
+                        border: 1px solid #eee;
+                        background: white;
+                        border-radius: 6px;
+                      "
+                    >
+                      <div
+                        v-for="investor in filteredInvestorsForMail"
+                        :key="investor.id"
+                        style="
+                          padding: 0.6rem;
+                          border-bottom: 1px solid #f5f5f5;
+                          display: flex;
+                          align-items: center;
+                          gap: 0.8rem;
+                        "
+                      >
+                        <input
+                          type="checkbox"
+                          :value="investor.id"
+                          v-model="selectedInvestorIds"
+                        />
+                        <div style="display: flex; flex-direction: column">
+                          <span style="font-size: 0.85rem; font-weight: 600">{{
+                            investor.full_name
+                          }}</span>
+                          <span style="font-size: 0.75rem; color: #666">{{
+                            investor.email
+                          }}</span>
+                        </div>
+                      </div>
+                      <div
+                        v-if="filteredInvestorsForMail.length === 0"
+                        style="padding: 1rem; text-align: center; color: #999"
+                      >
+                        No investors found.
+                      </div>
+                    </div>
+                    <div
+                      style="
+                        margin-top: 0.8rem;
+                        font-size: 0.8rem;
+                        color: var(--primary);
+                        font-weight: 600;
+                        display: flex;
+                        justify-content: space-between;
+                      "
+                    >
+                      <span
+                        >Selected:
+                        {{ selectedInvestorIds.length }} investors</span
+                      >
+                      <a
+                        href="#"
+                        @click.prevent="selectedInvestorIds = []"
+                        style="color: #ff5252; text-decoration: none"
+                        v-if="selectedInvestorIds.length > 0"
+                        >Clear Selection</a
+                      >
+                    </div>
+                  </div>
+                </div>
+
+                <div style="margin-top: 1rem">
+                  <h3
+                    style="
+                      margin-bottom: 1rem;
+                      font-size: 1rem;
+                      color: var(--primary);
+                    "
+                  >
+                    2. Property Image URL
+                  </h3>
+                  <input
+                    v-model="mailImageUrl"
+                    type="text"
+                    placeholder="https://example.com/image.jpg"
+                    style="
+                      width: 100%;
+                      padding: 0.8rem;
+                      border: 1px solid #eee;
+                      border-radius: 8px;
+                    "
+                  />
+                </div>
+
+                <div style="margin-top: 2rem">
+                  <h3
+                    style="
+                      margin-bottom: 1rem;
+                      font-size: 1rem;
+                      color: var(--primary);
+                    "
+                  >
+                    3. Additional Message (Optional)
+                  </h3>
+                  <textarea
+                    v-model="mailAdditionalMessage"
+                    placeholder="Add a personal note to the end of the mail..."
+                    style="
+                      width: 100%;
+                      height: 100px;
+                      padding: 0.8rem;
+                      border: 1px solid #eee;
+                      border-radius: 8px;
+                      font-family: inherit;
+                    "
+                  ></textarea>
+                </div>
+
+                <button
+                  @click="sendMailToInvestors"
+                  :disabled="
+                    sendingMail ||
+                    (mailRecipientType === 'selected' &&
+                      selectedInvestorIds.length === 0)
+                  "
+                  class="admin-btn primary-btn"
+                  style="
+                    width: 100%;
+                    margin-top: 2rem;
+                    padding: 1rem;
+                    font-size: 1.1rem;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 0.5rem;
+                    background: var(--primary);
+                    color: var(--accent);
+                  "
+                >
+                  <i class="fas fa-paper-plane"></i>
+                  {{
+                    sendingMail
+                      ? "Sending..."
+                      : mailRecipientType === "all"
+                        ? "Send Mail to All Investors"
+                        : "Send Mail to Selected Investors"
+                  }}
+                </button>
+              </div>
+
+              <!-- Preview -->
+              <div class="mail-preview">
+                <h3
+                  style="
+                    margin-bottom: 1rem;
+                    font-size: 1rem;
+                    color: var(--primary);
+                  "
+                >
+                  Mail Önizlemesi
+                </h3>
+                <div
+                  class="preview-container"
+                  style="
+                    border: 1px solid #ddd;
+                    border-radius: 8px;
+                    padding: 2rem;
+                    background: white;
+                    font-family: 'Inter', sans-serif;
+                  "
+                >
+                  <div
+                    style="
+                      border-bottom: 2px solid var(--primary);
+                      padding-bottom: 1.5rem;
+                      margin-bottom: 2rem;
+                      text-align: center;
+                    "
+                  >
+                    <img
+                      src="/doormanlogo.webp"
+                      alt="Doorman"
+                      style="height: 100px; display: block; margin: 0 auto"
+                    />
+                  </div>
+
+                  <h2
+                    style="
+                      font-size: 1.5rem;
+                      margin-bottom: 1rem;
+                      color: #1a237e;
+                      text-align: center;
+                    "
+                  >
+                    Yeni Yatırım Fırsatı
+                  </h2>
+                  <p
+                    style="
+                      color: #333;
+                      font-size: 1rem;
+                      line-height: 1.6;
+                      margin-bottom: 0.5rem;
+                      font-weight: bold;
+                    "
+                  >
+                    Sayın [Yatırımcı Adı],
+                  </p>
+                  <p
+                    style="
+                      color: #333;
+                      font-size: 1rem;
+                      line-height: 1.6;
+                      margin-bottom: 1.5rem;
+                    "
+                  >
+                    Güncel gayrimenkul fırsatını aşağıda inceleyebilirsiniz:
+                  </p>
+
+                  <div
+                    style="
+                      background: #fcfcfc;
+                      border: 1px solid #eee;
+                      border-radius: 12px;
+                      padding: 1.5rem;
+                      margin-bottom: 1.5rem;
+                    "
+                  >
+                    <!-- Property Image -->
+                    <div
+                      v-if="mailImageUrl"
+                      style="
+                        margin-bottom: 1.5rem;
+                        overflow: hidden;
+                        border-radius: 8px;
+                      "
+                    >
+                      <img
+                        :src="mailImageUrl"
+                        alt="Property"
+                        style="width: 100%; height: auto; display: block"
+                      />
+                    </div>
+
+                    <h4
+                      style="
+                        margin: 0 0 1rem 0;
+                        color: var(--primary);
+                        font-size: 1.1rem;
+                      "
+                    >
+                      {{ selectedListingForMail.neighborhood }} /
+                      {{ selectedListingForMail.zip_code }}
+                    </h4>
+                    <div
+                      style="
+                        display: grid;
+                        grid-template-columns: 1fr 1fr;
+                        gap: 1rem;
+                        font-size: 0.9rem;
+                      "
+                    >
+                      <div>
+                        <strong>Fiyat:</strong>
+                        {{
+                          new Intl.NumberFormat("tr-TR", {
+                            minimumFractionDigits: 0,
+                          })
+                            .format(selectedListingForMail.price)
+                            .replace(/,/g, ".")
+                        }}
+                        €
+                      </div>
+                      <div>
+                        <strong>Alan:</strong>
+                        {{ selectedListingForMail.square_meters }} m²
+                      </div>
+                      <div>
+                        <strong>M² Fiyatı:</strong>
+                        {{
+                          new Intl.NumberFormat("tr-TR", {
+                            minimumFractionDigits: 0,
+                          })
+                            .format(selectedListingForMail.price_per_sqm)
+                            .replace(/,/g, ".")
+                        }}
+                        €/m²
+                      </div>
+                      <div>
+                        <strong>Oda Sayısı:</strong>
+                        {{ selectedListingForMail.rooms }}
+                      </div>
+                      <div>
+                        <strong>Enerji Sınıfı (DPE):</strong>
+                        {{ selectedListingForMail.dpe || "N/A" }}
+                      </div>
+                    </div>
+                    <div
+                      style="
+                        margin-top: 1rem;
+                        padding-top: 1rem;
+                        border-top: 1px solid #eee;
+                      "
+                    >
+                      <a
+                        :href="selectedListingForMail.url"
+                        target="_blank"
+                        style="
+                          color: var(--primary);
+                          font-weight: 600;
+                          text-decoration: none;
+                        "
+                        >İlan Detaylarını Gör &rarr;</a
+                      >
+                    </div>
+                  </div>
+
+                  <!-- Additional Message in Preview -->
+                  <div
+                    v-if="mailAdditionalMessage"
+                    style="
+                      margin-top: 2rem;
+                      padding: 1.5rem 0;
+                      font-size: 1rem;
+                      color: #444;
+                      line-height: 1.6;
+                      border-top: 1px solid #eee;
+                    "
+                  >
+                    {{ mailAdditionalMessage }}
+                  </div>
+
+                  <p
+                    style="
+                      font-size: 0.85rem;
+                      color: #999;
+                      text-align: center;
+                      margin-top: 2rem;
+                      border-top: 1px solid #eee;
+                      padding-top: 1rem;
+                    "
+                  >
+                    &copy; 2026 Doorman. Tüm hakları saklıdır.<br />
+                    Bu e-posta yatırım projeniz için oluşturulmuştur.<br /><br />
+                    <a
+                      href="#"
+                      @click.prevent
+                      style="
+                        font-size: 0.8em;
+                        opacity: 0.8;
+                        color: #999;
+                        text-decoration: underline;
+                      "
+                    >
+                      Bu bülteni artık almak istemiyorsanız, lütfen buraya
+                      tıklayın. / Si vous ne souhaitez plus recevoir cette
+                      newsletter, veuillez cliquer ici.
+                    </a>
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
       </div>
