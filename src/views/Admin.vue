@@ -504,7 +504,7 @@ const handleLogout = () => {
 const fetchProperties = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/properties/`, {
+    const res = await fetch(`${backendUrl}/properties`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.status === 401) return handleLogout();
@@ -520,7 +520,7 @@ const fetchUsers = async () => {
   if (!isSuperuser.value) return;
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/users/`, {
+    const res = await fetch(`${backendUrl}/admin/users`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.status === 401) return handleLogout();
@@ -534,7 +534,7 @@ const fetchInvestors = async () => {
   if (!isSuperuser.value) return;
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/investors/`, {
+    const res = await fetch(`${backendUrl}/admin/investors`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.status === 401) return handleLogout();
@@ -547,7 +547,7 @@ const fetchInvestors = async () => {
 const addInvestor = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/investors/`, {
+    const res = await fetch(`${backendUrl}/admin/investors`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -572,7 +572,7 @@ const deleteInvestor = async (id) => {
   if (!confirm("Are you sure you want to delete this investor?")) return;
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/investors/${id}/`, {
+    const res = await fetch(`${backendUrl}/admin/investors/${id}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -589,7 +589,7 @@ const deleteInvestor = async (id) => {
 const fetchBlogPosts = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/blog-posts/`, {
+    const res = await fetch(`${backendUrl}/admin/blog-posts`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.status === 401) return handleLogout();
@@ -602,7 +602,7 @@ const fetchBlogPosts = async () => {
 const approveBlogPost = async (id) => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/blog-posts/${id}/approve/`, {
+    const res = await fetch(`${backendUrl}/blog-posts/${id}/approve`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -688,7 +688,7 @@ const updateProperty = async () => {
         payload.details.transport_info.join(", ");
     }
 
-    const res = await fetch(`${backendUrl}/properties/${editingId.value}/`, {
+    const res = await fetch(`${backendUrl}/properties/${editingId.value}`, {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",
@@ -721,7 +721,7 @@ const addProperty = async () => {
         payload.details.transport_info.join(", ");
     }
 
-    const res = await fetch(`${backendUrl}/properties/`, {
+    const res = await fetch(`${backendUrl}/properties`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -780,7 +780,7 @@ const resetBlogForm = () => {
 const addBlogPost = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/blog-posts/`, {
+    const res = await fetch(`${backendUrl}/blog-posts`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -902,7 +902,7 @@ const deleteAdminUser = async (id, email) => {
 
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/users/${id}/`, {
+    const res = await fetch(`${backendUrl}/admin/users/${id}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -929,7 +929,7 @@ const deleteAdminUser = async (id, email) => {
 const createAdminUser = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/users/`, {
+    const res = await fetch(`${backendUrl}/admin/users`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -969,7 +969,7 @@ const handleFileUpload = async (event) => {
       const formData = new FormData();
       formData.append("file", file);
 
-      const res = await fetch(`${backendUrl}/upload/`, {
+      const res = await fetch(`${backendUrl}/upload`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -1007,7 +1007,7 @@ const handleBlogImageUpload = async (event) => {
   try {
     const formData = new FormData();
     formData.append("file", file);
-    const res = await fetch(`${backendUrl}/upload/`, {
+    const res = await fetch(`${backendUrl}/upload`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
       body: formData,
@@ -1056,7 +1056,7 @@ const removeMedia = async (index) => {
 const fetchContactMessages = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/contact-messages/`, {
+    const res = await fetch(`${backendUrl}/admin/contact-messages`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) {
@@ -1155,7 +1155,7 @@ const approvePasswordReset = async (id) => {
 const fetchResearchListings = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/research-listings/`, {
+    const res = await fetch(`${backendUrl}/admin/research-listings`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) {
@@ -1181,7 +1181,7 @@ const addResearchListing = async () => {
 
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/research-listings/`, {
+    const res = await fetch(`${backendUrl}/admin/research-listings`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1285,7 +1285,7 @@ const deleteResearchListing = async (id) => {
   if (!confirm("Are you sure?")) return;
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/research-listings/${id}/`, {
+    const res = await fetch(`${backendUrl}/admin/research-listings/${id}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -1311,7 +1311,7 @@ const deleteResearchListing = async (id) => {
 const fetchBuyers = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/buyers/`, {
+    const res = await fetch(`${backendUrl}/admin/buyers`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) buyers.value = await res.json();
@@ -1323,7 +1323,7 @@ const fetchBuyers = async () => {
 const addBuyer = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/buyers/`, {
+    const res = await fetch(`${backendUrl}/admin/buyers`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1364,7 +1364,7 @@ const deleteBuyer = async (id) => {
 const fetchResearchTags = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/research-tags/`, {
+    const res = await fetch(`${backendUrl}/admin/research-tags`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) tags.value = await res.json();
@@ -1377,7 +1377,7 @@ const addResearchTag = async () => {
   if (!newTagName.value) return;
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/research-tags/`, {
+    const res = await fetch(`${backendUrl}/admin/research-tags`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1401,7 +1401,7 @@ const deleteResearchTag = async (id) => {
   if (!confirm("Delete this tag?")) return;
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/research-tags/${id}/`, {
+    const res = await fetch(`${backendUrl}/admin/research-tags/${id}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -1435,7 +1435,7 @@ const sendMailToInvestors = async () => {
   sendingMail.value = true;
   try {
     const response = await fetch(
-      `${backendUrl}/admin/research-listings/send-mail/`,
+      `${backendUrl}/admin/research-listings/send-mail`,
       {
         method: "POST",
         headers: {
