@@ -76,7 +76,7 @@ const fetchFilteredProperties = async () => {
   isLoading.value = true;
   try {
     const params = new URLSearchParams(route.query);
-    const res = await fetch(`${backendUrl}/properties/?${params.toString()}`);
+    const res = await fetch(`${backendUrl}/properties?${params.toString()}`);
     properties.value = await res.json();
   } catch (err) {
     console.error("Failed to fetch properties", err);

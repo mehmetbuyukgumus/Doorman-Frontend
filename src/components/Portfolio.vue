@@ -9,7 +9,7 @@ const backendUrl = (import.meta.env.VITE_API_URL || "http://localhost:8000").rep
 
 const fetchProperties = async () => {
   try {
-    const res = await fetch(`${backendUrl}/properties/`);
+    const res = await fetch(`${backendUrl}/properties`);
     const data = await res.json();
     // Filter for active or exclusive listings, sort by newest first, and limit to 3
     properties.value = data
