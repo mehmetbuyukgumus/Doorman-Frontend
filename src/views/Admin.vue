@@ -3822,7 +3822,7 @@ onMounted(async () => {
                     border-radius: 8px;
                     padding: 2rem;
                     background: white;
-                    font-family: 'Inter', sans-serif;
+                    font-family: sans-serif;
                   "
                 >
                   <div
