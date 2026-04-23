@@ -69,7 +69,7 @@ const getSelectedRoomLabel = computed(() => {
 onMounted(async () => {
   try {
     const res = await fetch(
-      `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/listings/filters`,
+      `${(import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "")}/listings/filters`,
     );
     dynamicOptions.value = await res.json();
   } catch (err) {

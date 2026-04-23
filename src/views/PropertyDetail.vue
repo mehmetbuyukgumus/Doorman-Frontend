@@ -17,7 +17,7 @@ const handleInquiry = () => {
   }
 };
 const isLoading = ref(true);
-const backendUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const backendUrl = (import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
 const localizedDescription = computed(() => {
   if (!property.value || !property.value.details) return "";

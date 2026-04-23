@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 
 const { t, locale } = useI18n();
 const blogPosts = ref([]);
-const backendUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const backendUrl = (import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
 const fetchBlogPosts = async () => {
   try {

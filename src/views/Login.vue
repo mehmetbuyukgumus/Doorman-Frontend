@@ -28,7 +28,7 @@ const handleLogin = async () => {
     formData.append("password", password.value);
 
     const res = await fetch(
-      `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/auth/login`,
+      `${(import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "")}/auth/login`,
       {
         method: "POST",
         body: formData,
@@ -74,7 +74,7 @@ const handleChangePassword = async () => {
   isSubmitting.value = true;
   try {
     const res = await fetch(
-      `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/auth/change-password`,
+      `${(import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "")}/auth/change-password`,
       {
         method: "POST",
         headers: {
@@ -106,7 +106,7 @@ const handleResetRequest = async () => {
   isSubmitting.value = true;
   try {
     const res = await fetch(
-      `${import.meta.env.VITE_API_URL || "http://localhost:8000"}/auth/forgot-password`,
+      `${(import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "")}/auth/forgot-password`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
