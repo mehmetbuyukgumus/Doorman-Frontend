@@ -589,7 +589,7 @@ const deleteInvestor = async (id) => {
 const fetchBlogPosts = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/blog-posts`, {
+    const res = await fetch(`${backendUrl}/blog-posts/admin/posts`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.status === 401) return handleLogout();
@@ -929,7 +929,7 @@ const deleteAdminUser = async (id, email) => {
 const createAdminUser = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/users/`, {
+    const res = await fetch(`${backendUrl}/admin/users`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1073,9 +1073,9 @@ const markMessageAsRead = async (id, isRead) => {
   const token = localStorage.getItem("admin_token");
   try {
     const res = await fetch(
-      `${backendUrl}/admin/contact-messages/${id}/status`,
+      `${backendUrl}/admin/contact-messages/${id}`,
       {
-        method: "PUT",
+        method: "PATCH",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
@@ -1112,7 +1112,7 @@ const deleteContactMessage = async (id) => {
 const fetchPasswordResets = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/password-resets`, {
+    const res = await fetch(`${backendUrl}/admin/users/password-requests`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) {
@@ -1133,7 +1133,7 @@ const approvePasswordReset = async (id) => {
     return;
   try {
     const res = await fetch(
-      `${backendUrl}/admin/password-resets/${id}/approve`,
+      `${backendUrl}/admin/users/password-requests/${id}/approve`,
       {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
