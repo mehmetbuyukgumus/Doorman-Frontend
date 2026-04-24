@@ -1311,7 +1311,7 @@ const deleteResearchListing = async (id) => {
 const fetchBuyers = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/buyers`, {
+    const res = await fetch(`${backendUrl}/admin/investors/buyers`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) buyers.value = await res.json();
@@ -1323,7 +1323,7 @@ const fetchBuyers = async () => {
 const addBuyer = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/buyers`, {
+    const res = await fetch(`${backendUrl}/admin/investors/buyers`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1348,7 +1348,7 @@ const deleteBuyer = async (id) => {
   if (!confirm("Remove this buyer?")) return;
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/buyers/${id}`, {
+    const res = await fetch(`${backendUrl}/admin/investors/buyers/${id}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
     });
