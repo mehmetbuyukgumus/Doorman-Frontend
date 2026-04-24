@@ -8,7 +8,7 @@ const backendUrl = (import.meta.env.VITE_API_URL || "http://localhost:8000").rep
 
 const fetchBlogPosts = async () => {
   try {
-    const res = await fetch(`${backendUrl}/blog-posts/`);
+    const res = await fetch(`${backendUrl}/blog-posts`);
     if (res.ok) {
       blogPosts.value = await res.json();
     }

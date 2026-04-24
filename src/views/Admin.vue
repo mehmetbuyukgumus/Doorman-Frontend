@@ -969,7 +969,7 @@ const handleFileUpload = async (event) => {
       const formData = new FormData();
       formData.append("file", file);
 
-      const res = await fetch(`${backendUrl}/upload`, {
+      const res = await fetch(`${backendUrl}/upload-image`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -1007,7 +1007,7 @@ const handleBlogImageUpload = async (event) => {
   try {
     const formData = new FormData();
     formData.append("file", file);
-    const res = await fetch(`${backendUrl}/upload`, {
+    const res = await fetch(`${backendUrl}/upload-image`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
       body: formData,
@@ -1031,7 +1031,7 @@ const removeMedia = async (index) => {
     try {
       // Encode public_id because it might contain slashes
       const encodedId = encodeURIComponent(mediaItem.public_id);
-      const res = await fetch(`${backendUrl}/upload/${encodedId}`, {
+      const res = await fetch(`${backendUrl}/upload-image/${encodedId}`, {
         method: "DELETE",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -1311,7 +1311,7 @@ const deleteResearchListing = async (id) => {
 const fetchBuyers = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/investors/buyers`, {
+    const res = await fetch(`${backendUrl}/admin/buyers`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) buyers.value = await res.json();
@@ -1323,7 +1323,7 @@ const fetchBuyers = async () => {
 const addBuyer = async () => {
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/investors/buyers`, {
+    const res = await fetch(`${backendUrl}/admin/buyers`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1348,7 +1348,7 @@ const deleteBuyer = async (id) => {
   if (!confirm("Remove this buyer?")) return;
   const token = localStorage.getItem("admin_token");
   try {
-    const res = await fetch(`${backendUrl}/admin/investors/buyers/${id}`, {
+    const res = await fetch(`${backendUrl}/admin/buyers/${id}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
     });

@@ -14,10 +14,9 @@ const fetchPost = async () => {
   try {
     // We can fetch by ID from admin if we had it, but for public we can filter by slug
     // Let's assume we fetch all and find by slug for now, or use a dedicated slug endpoint
-    const res = await fetch(`${backendUrl}/blog-posts/`);
+    const res = await fetch(`${backendUrl}/blog-posts/${route.params.slug}`);
     if (res.ok) {
-      const posts = await res.json();
-      post.value = posts.find((p) => p.slug === route.params.slug);
+      post.value = await res.json();
     }
   } catch (err) {
     console.error("Failed to fetch post:", err);
