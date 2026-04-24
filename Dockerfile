@@ -7,7 +7,7 @@ COPY package*.json ./
 RUN npm install
 
 COPY . .
-ENV VITE_API_URL=/api
+ENV VITE_API_URL=/api/v1
 RUN npm run build
 
 # Production stage
