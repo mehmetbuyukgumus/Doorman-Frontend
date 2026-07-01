@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed, watch } from "vue";
+import { ref, reactive, onMounted, computed, watch, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import { QuillEditor } from "@vueup/vue-quill";
@@ -22,6 +22,157 @@ const contactMessages = ref([]);
 const researchListings = ref([]);
 const buyers = ref([]);
 const isEditingResearch = ref(false);
+const showResearchForm = ref(false);
+
+const conciergeProperties = ref([]);
+const selectedConciergeProperty = ref(null);
+const showConciergeForm = ref(false);
+const isEditingConcierge = ref(false);
+const editingConciergeId = ref(null);
+const isSyncingConcierge = ref(false);
+const newConcierge = ref({ title: "", address: "", owner_name: "", owner_email: "" });
+const emailReportPeriod = ref({
+  type: "selected", // 'all', 'selected', or 'custom'
+  month: new Date().getMonth(),
+  year: new Date().getFullYear()
+});
+
+const reportsFilter = ref({
+  search: "",
+  status: "all"
+});
+const reportsPerPage = ref(10);
+const reportsCurrentPage = ref(1);
+
+
+const showConciergeDetailsModal = ref(false);
+const selectedConciergeDetailsProperty = ref(null);
+const showBookingModal = ref(false);
+const selectedBookingProperty = ref(null);
+const newBooking = ref({ start_date: "", end_date: "", guest_name: "", price: null });
+const showBookingDetailsModal = ref(false);
+const selectedBookingDetail = ref(null);
+
+const showQuickBookingModal = ref(false);
+const quickBookingPropertyId = ref(null);
+
+const currentConciergeView = ref('calendar');
+const bookingForm = ref({
+  id: null,
+  start_date: "",
+  end_date: "",
+  guest_name: "",
+  price: 0,
+  platform: "resaoff",
+  platform_fee: 0,
+  commission_rate: 20
+});
+
+// Cleaning management state
+const cleaners = ref([]);
+const cleaningAssignments = ref([]);
+const cleaningSelectedDate = ref(new Date().toISOString().slice(0, 10));
+const newCleanerForm = ref({ name: "", phone: "" });
+const cleaningNote = ref({});
+const cleanerSelectedProperty = reactive({});
+const cleanerAssignmentNote = reactive({});
+
+
+
+const nightsCount = computed(() => {
+  if (!bookingForm.value.start_date || !bookingForm.value.end_date) return 0;
+  const s = new Date(bookingForm.value.start_date);
+  const e = new Date(bookingForm.value.end_date);
+  const diff = e - s;
+  return Math.max(1, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+});
+
+const payoutBreakdown = computed(() => {
+  const p = parseFloat(bookingForm.value.price || 0);
+  const pf = parseFloat(bookingForm.value.platform_fee || 0);
+  const cr = parseFloat(bookingForm.value.commission_rate || 20);
+  const nights = nightsCount.value || 1;
+  
+  const net = Math.max(0, p - pf);
+  const doorman = net * (cr / 100);
+  const owner = net - doorman;
+  const nightly = p > 0 && nights > 0 ? (p / nights) : 0;
+  
+  return {
+    net: net.toFixed(2),
+    doorman: doorman.toFixed(2),
+    owner: owner.toFixed(2),
+    nightly: nightly.toFixed(2)
+  };
+});
+
+const currentYear = ref(new Date().getFullYear());
+const currentMonth = ref(new Date().getMonth());
+
+// Reservations list view state
+const reservationListFilter = ref({ property: 'all', platform: 'all', search: '', year: 'all', month: 'all' });
+const reservationsPerPage = ref(10);
+const reservationsCurrentPage = ref(1);
+
+const allReservations = computed(() => {
+  let list = [];
+  conciergeProperties.value.forEach(prop => {
+    (prop.bookings || []).forEach(b => {
+      list.push({ ...b, propertyTitle: prop.title, propertyId: prop.id });
+    });
+  });
+
+  if (reservationListFilter.value.property !== 'all') {
+    list = list.filter(b => b.propertyId === parseInt(reservationListFilter.value.property));
+  }
+  if (reservationListFilter.value.platform !== 'all') {
+    list = list.filter(b => (b.platform || 'resaoff') === reservationListFilter.value.platform);
+  }
+  if (reservationListFilter.value.year !== 'all') {
+    const yr = parseInt(reservationListFilter.value.year);
+    list = list.filter(b => new Date(b.start_date).getFullYear() === yr);
+  }
+  if (reservationListFilter.value.month !== 'all') {
+    const mo = parseInt(reservationListFilter.value.month);
+    list = list.filter(b => new Date(b.start_date).getMonth() === mo);
+  }
+  if (reservationListFilter.value.search.trim()) {
+    const q = reservationListFilter.value.search.trim().toLowerCase();
+    list = list.filter(b =>
+      (b.guest_name || '').toLowerCase().includes(q) ||
+      (b.propertyTitle || '').toLowerCase().includes(q)
+    );
+  }
+
+  list.sort((a, b) => new Date(b.start_date) - new Date(a.start_date));
+  return list;
+});
+
+const reservationsTotalPages = computed(() => {
+  return Math.ceil(allReservations.value.length / reservationsPerPage.value) || 1;
+});
+
+const paginatedReservations = computed(() => {
+  const start = (reservationsCurrentPage.value - 1) * reservationsPerPage.value;
+  const end = start + reservationsPerPage.value;
+  return allReservations.value.slice(start, end);
+});
+
+watch([reservationListFilter, reservationsPerPage], () => {
+  reservationsCurrentPage.value = 1;
+}, { deep: true });
+
+// Available years derived from all bookings
+const availableYears = computed(() => {
+  const years = new Set();
+  conciergeProperties.value.forEach(prop => {
+    (prop.bookings || []).forEach(b => {
+      if (b.start_date) years.add(new Date(b.start_date).getFullYear());
+    });
+  });
+  return Array.from(years).sort((a, b) => b - a);
+});
+
 
 // 3. Research State & Filters
 const researchCurrentPage = ref(1);
@@ -495,6 +646,1148 @@ const fetchProperties = async () => {
   }
 };
 
+const fetchConciergeProperties = async () => {
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/concierge/`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401) return handleLogout();
+    conciergeProperties.value = await res.json();
+    
+    if (selectedConciergeProperty.value) {
+      const updated = conciergeProperties.value.find(p => p.id === selectedConciergeProperty.value.id);
+      if (updated) {
+        selectedConciergeProperty.value = updated;
+      }
+    }
+  } catch (err) {
+    console.error("Failed to fetch concierge properties", err);
+  }
+};
+
+const conciergeReports = ref([]);
+
+const fetchConciergeReports = async () => {
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/concierge/reports/`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok) {
+      conciergeReports.value = await res.json();
+    }
+  } catch (err) {
+    console.error("Failed to fetch concierge reports", err);
+  }
+};
+
+// ── Cleaning API Functions ─────────────────────────────────────────────────
+
+const fetchCleaners = async () => {
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/cleaners/`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok) cleaners.value = await res.json();
+  } catch (err) { console.error("Failed to fetch cleaners", err); }
+};
+
+const fetchCleaningAssignments = async () => {
+  const token = localStorage.getItem("admin_token");
+  try {
+    const url = cleaningSelectedDate.value
+      ? `${backendUrl}/cleaning-assignments/?cleaning_date=${cleaningSelectedDate.value}`
+      : `${backendUrl}/cleaning-assignments/`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (res.ok) cleaningAssignments.value = await res.json();
+  } catch (err) { console.error("Failed to fetch cleaning assignments", err); }
+};
+
+const addCleaner = async () => {
+  if (!newCleanerForm.value.name.trim()) return;
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/cleaners/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name: newCleanerForm.value.name.trim(), phone: newCleanerForm.value.phone.trim() || null })
+    });
+    if (res.ok) {
+      newCleanerForm.value = { name: "", phone: "" };
+      await fetchCleaners();
+    }
+  } catch (err) { console.error("Failed to add cleaner", err); }
+};
+
+const deleteCleaner = async (cleanerId) => {
+  if (!confirm("Are you sure you want to delete this cleaner?")) return;
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/cleaners/${cleanerId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok || res.status === 204) await fetchCleaners();
+  } catch (err) { console.error("Failed to delete cleaner", err); }
+};
+
+const assignCleaner = async (propertyId, cleanerId, note) => {
+  if (!cleanerId) { alert("Please select a cleaner."); return; }
+  if (!propertyId) { alert("Please select a property."); return; }
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/cleaning-assignments/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        cleaner_id: parseInt(cleanerId),
+        property_id: parseInt(propertyId),
+        cleaning_date: cleaningSelectedDate.value,
+        notes: note || null
+      })
+    });
+    if (res.ok) {
+      cleaningNote.value[propertyId] = "";
+      await fetchCleaningAssignments();
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.detail}`);
+    }
+  } catch (err) { console.error("Failed to assign cleaner", err); }
+};
+
+const removeAssignment = async (assignmentId) => {
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/cleaning-assignments/${assignmentId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok || res.status === 204) await fetchCleaningAssignments();
+  } catch (err) { console.error("Failed to remove assignment", err); }
+};
+
+// Properties that have a checkout on the selected cleaning date
+const checkoutsOnSelectedDate = computed(() => {
+  if (!cleaningSelectedDate.value) return [];
+  return conciergeProperties.value
+    .map(prop => {
+      const checkout = (prop.bookings || []).find(b => b.end_date === cleaningSelectedDate.value);
+      if (!checkout) return null;
+      const assignment = cleaningAssignments.value.find(a => a.property_id === prop.id);
+      return { prop, booking: checkout, assignment: assignment || null };
+    })
+    .filter(Boolean);
+});
+
+const unassignedCheckouts = computed(() => {
+  return checkoutsOnSelectedDate.value.filter(item => !item.assignment);
+});
+
+const getAssignmentsForCleaner = (cleanerId) => {
+  if (!cleaningAssignments.value) return [];
+  return cleaningAssignments.value.filter(a => a.cleaner_id === cleanerId);
+};
+
+const cleaningWhatsappMessage = computed(() => {
+  if (!cleaningSelectedDate.value) return "";
+  
+  // Parse date safely avoiding timezone shift
+  const parts = cleaningSelectedDate.value.split('-');
+  const dateObj = new Date(parts[0], parts[1] - 1, parts[2]);
+  
+  const dayNum = dateObj.getDate();
+  const monthName = dateObj.toLocaleDateString('fr-FR', { month: 'long' }).toUpperCase();
+  const yearNum = dateObj.getFullYear();
+  let weekdayName = dateObj.toLocaleDateString('fr-FR', { weekday: 'long' });
+  if (weekdayName) {
+    weekdayName = weekdayName.charAt(0).toUpperCase() + weekdayName.slice(1);
+  }
+  
+  let msg = "PLANNING DE MENAGE\n";
+  msg += `${dayNum} ${monthName} ${yearNum} ${weekdayName}\n`;
+  
+  // Group assignments by cleaner name
+  const cleanerGroups = {};
+  
+  checkoutsOnSelectedDate.value.forEach(item => {
+    if (item.assignment) {
+      const cleanerName = item.assignment.cleaner?.name || "Unassigned";
+      if (!cleanerGroups[cleanerName]) {
+        cleanerGroups[cleanerName] = [];
+      }
+      const note = item.assignment.notes ? `: ${item.assignment.notes}` : "";
+      cleanerGroups[cleanerName].push(`- ${item.prop.title}${note}`);
+    } else {
+      const unassignedKey = "Unassigned Cleanings";
+      if (!cleanerGroups[unassignedKey]) {
+        cleanerGroups[unassignedKey] = [];
+      }
+      cleanerGroups[unassignedKey].push(`- ${item.prop.title}: Pending Assignment`);
+    }
+  });
+  
+  Object.keys(cleanerGroups).forEach(cleanerName => {
+    msg += `\n*${cleanerName}*:\n`;
+    cleanerGroups[cleanerName].forEach(line => {
+      msg += `${line}\n`;
+    });
+  });
+  
+  return msg;
+});
+
+
+const copyCleaningSchedule = async () => {
+  const msg = cleaningWhatsappMessage.value;
+  if (!msg.trim()) {
+    alert("The cleaning schedule is empty.");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(msg);
+    alert("WhatsApp message copied to clipboard successfully!");
+  } catch (err) {
+    console.error("Failed to copy", err);
+    alert("Failed to copy, please check browser permissions.");
+  }
+};
+
+
+
+// watch date change to reload assignments
+const addConciergeProperty = async () => {
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/concierge/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(newConcierge.value),
+    });
+    if (res.ok) {
+      await fetchConciergeProperties();
+      alert("Concierge property added!");
+      resetConciergeForm();
+      showConciergeForm.value = false;
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.detail}`);
+    }
+  } catch (err) {
+    alert("Network error.");
+  }
+};
+
+const updateConciergeProperty = async () => {
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/concierge/${editingConciergeId.value}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(newConcierge.value),
+    });
+    if (res.ok) {
+      await fetchConciergeProperties();
+      if (selectedConciergeDetailsProperty.value && selectedConciergeDetailsProperty.value.id === editingConciergeId.value) {
+        selectedConciergeDetailsProperty.value = conciergeProperties.value.find(p => p.id === editingConciergeId.value);
+      }
+      alert("Concierge property updated!");
+      cancelEditConcierge();
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.detail}`);
+    }
+  } catch (err) {
+    alert("Network error.");
+  }
+};
+
+const deleteConciergeProperty = async (id) => {
+  if (!confirm("Are you sure? This will delete all associated bookings.")) return;
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/concierge/${id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok) {
+      if (selectedConciergeProperty.value && selectedConciergeProperty.value.id === id) {
+        selectedConciergeProperty.value = null;
+      }
+      await fetchConciergeProperties();
+      alert("Concierge property deleted!");
+    } else {
+      alert("Failed to delete property.");
+    }
+  } catch (err) {
+    alert("Network error.");
+  }
+};
+
+const startAddConcierge = () => {
+  isEditingConcierge.value = false;
+  editingConciergeId.value = null;
+  resetConciergeForm();
+  showConciergeForm.value = true;
+};
+
+const startEditConcierge = (prop) => {
+  isEditingConcierge.value = true;
+  editingConciergeId.value = prop.id;
+  newConcierge.value = {
+    title: prop.title,
+    address: prop.address || "",
+    owner_name: prop.owner_name || "",
+    owner_email: prop.owner_email || ""
+  };
+  showConciergeForm.value = true;
+};
+
+const cancelEditConcierge = () => {
+  isEditingConcierge.value = false;
+  editingConciergeId.value = null;
+  showConciergeForm.value = false;
+  resetConciergeForm();
+};
+
+const daysInActiveMonth = computed(() => {
+  const year = currentYear.value;
+  const month = currentMonth.value;
+  const numDays = new Date(year, month + 1, 0).getDate();
+  const days = [];
+  for (let d = 1; d <= numDays; d++) {
+    days.push(new Date(year, month, d));
+  }
+  return days;
+});
+
+const parseISODateLocal = (dateStr) => {
+  if (!dateStr) return new Date();
+  if (dateStr instanceof Date) return dateStr;
+  const parts = dateStr.split("-");
+  if (parts.length === 3) {
+    return new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+  }
+  return new Date(dateStr);
+};
+
+const isToday = (dateObj) => {
+  const today = new Date();
+  return dateObj.getDate() === today.getDate() &&
+         dateObj.getMonth() === today.getMonth() &&
+         dateObj.getFullYear() === today.getFullYear();
+};
+
+const scrollToToday = async () => {
+  const today = new Date();
+  currentYear.value = today.getFullYear();
+  currentMonth.value = today.getMonth();
+  // Wait for Vue to re-render with the correct month
+  await nextTick();
+  const todayStr = today.toISOString().slice(0, 10);
+  const todayEl = document.querySelector(`[data-date="${todayStr}"]`);
+  if (todayEl) {
+    todayEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  }
+};
+
+const getBookingState = (property, dateObj) => {
+  const matches = getBookingsForDay(property, dateObj);
+  if (matches.length > 0) {
+    return {
+      isBooked: true,
+      booking: matches[0].booking,
+      isStart: matches[0].isStart,
+      isEnd: matches[0].isEnd
+    };
+  }
+  return { isBooked: false };
+};
+
+const getBookingsForDay = (property, dateObj) => {
+  if (!property.bookings) return [];
+  
+  const curStr = formatDateToISO(dateObj);
+  const cur = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate());
+  
+  const matches = [];
+  
+  for (const b of property.bookings) {
+    const s = parseISODateLocal(b.start_date);
+    const e = parseISODateLocal(b.end_date);
+    
+    if (cur >= s && cur <= e) {
+      const isStart = formatDateToISO(s) === curStr;
+      const isEnd = formatDateToISO(e) === curStr;
+      
+      matches.push({
+        booking: b,
+        isStart,
+        isEnd
+      });
+    }
+  }
+  
+  // Sort: checkout (isEnd) first, checkin (isStart) second
+  matches.sort((a, b) => {
+    if (a.isEnd && !b.isEnd) return -1;
+    if (!a.isEnd && b.isEnd) return 1;
+    return 0;
+  });
+  
+  return matches;
+};
+
+const getBookingBarStyle = (booking, isStart, isEnd, dayBookings = []) => {
+  let bg = '#f97316'; // default manual orange
+  let color = '#000000'; // black text
+  
+  const platform = (booking.platform || '').toLowerCase();
+  
+  if (platform === 'airbnb') {
+    bg = '#ef4444'; // red
+    color = '#ffffff';
+  } else if (platform === 'booking') {
+    bg = '#2563eb'; // vibrant blue
+    color = '#ffffff';
+  }
+  
+  const hasBoth = dayBookings.length > 1;
+  
+  if (hasBoth) {
+    if (isEnd) {
+      // Checkout booking takes left 50%
+      return {
+        background: bg,
+        color: color,
+        width: '50%',
+        left: '0',
+        right: 'auto',
+        borderTopLeftRadius: '0',
+        borderBottomLeftRadius: '0',
+        borderTopRightRadius: '18px',
+        borderBottomRightRadius: '18px',
+        marginLeft: '0',
+        marginRight: '0',
+        zIndex: 2,
+        overflow: 'hidden'
+      };
+    } else if (isStart) {
+      // Checkin booking takes right 50%
+      return {
+        background: bg,
+        color: color,
+        width: '50%',
+        left: 'auto',
+        right: '0',
+        borderTopLeftRadius: '18px',
+        borderBottomLeftRadius: '18px',
+        borderTopRightRadius: '0',
+        borderBottomRightRadius: '0',
+        marginLeft: '0',
+        marginRight: '0',
+        zIndex: 3,
+        overflow: 'visible'
+      };
+    }
+  }
+  
+  return {
+    background: bg,
+    color: color,
+    width: '100%',
+    left: '0',
+    right: '0',
+    marginLeft: isStart ? '4px' : '0',
+    marginRight: isEnd ? '4px' : '0',
+    borderTopLeftRadius: isStart ? '18px' : '0',
+    borderBottomLeftRadius: isStart ? '18px' : '0',
+    borderTopRightRadius: isEnd ? '18px' : '0',
+    borderBottomRightRadius: isEnd ? '18px' : '0',
+    zIndex: isStart ? 3 : 2,
+    overflow: isStart ? 'visible' : 'hidden'
+  };
+};
+
+const resetConciergeForm = () => {
+  newConcierge.value = { title: "", address: "", owner_name: "", owner_email: "" };
+};
+
+const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+const calendarDays = computed(() => {
+  const year = currentYear.value;
+  const month = currentMonth.value;
+  
+  const firstDay = new Date(year, month, 1).getDay();
+  const startOffset = firstDay === 0 ? 6 : firstDay - 1;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  
+  const days = [];
+  
+  const prevMonthDays = new Date(year, month, 0).getDate();
+  for (let i = startOffset - 1; i >= 0; i--) {
+    const d = prevMonthDays - i;
+    const prevMonth = month === 0 ? 11 : month - 1;
+    const prevYear = month === 0 ? year - 1 : year;
+    days.push({
+      dayNumber: d,
+      date: new Date(prevYear, prevMonth, d),
+      isCurrentMonth: false,
+    });
+  }
+  
+  for (let d = 1; d <= daysInMonth; d++) {
+    days.push({
+      dayNumber: d,
+      date: new Date(year, month, d),
+      isCurrentMonth: true,
+    });
+  }
+  
+  const totalSlots = 42;
+  const nextMonthPadding = totalSlots - days.length;
+  for (let d = 1; d <= nextMonthPadding; d++) {
+    const nextMonth = month === 11 ? 0 : month + 1;
+    const nextYear = month === 11 ? year + 1 : year;
+    days.push({
+      dayNumber: d,
+      date: new Date(nextYear, nextMonth, d),
+      isCurrentMonth: false,
+    });
+  }
+  
+  return days.map(day => {
+    const dateStr = formatDateToISO(day.date);
+    const dayBookings = [];
+    
+    if (selectedConciergeProperty.value) {
+      dayBookings.push(...findBookingsForDate(selectedConciergeProperty.value, day.date));
+    } else {
+      conciergeProperties.value.forEach(prop => {
+        const bookings = findBookingsForDate(prop, day.date).map(b => ({
+          ...b,
+          propertyName: prop.title
+        }));
+        dayBookings.push(...bookings);
+      });
+    }
+    
+    return {
+      ...day,
+      dateStr,
+      bookings: dayBookings,
+      isBooked: dayBookings.length > 0
+    };
+  });
+});
+
+const formatDateToISO = (d) => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const formatDateToEU = (dateVal) => {
+  if (!dateVal) return "—";
+  if (typeof dateVal === 'string') {
+    const parts = dateVal.split('-');
+    if (parts.length === 3) {
+      const yy = parts[0].slice(2);
+      return `${parts[2]}/${parts[1]}/${yy}`;
+    }
+  } else if (dateVal instanceof Date) {
+    const day = String(dateVal.getDate()).padStart(2, '0');
+    const month = String(dateVal.getMonth() + 1).padStart(2, '0');
+    const yy = String(dateVal.getFullYear()).slice(2);
+    return `${day}/${month}/${yy}`;
+  }
+  return dateVal;
+};
+
+const exportReservationsToExcel = (bookings, propertyTitle = null) => {
+  const rows = [];
+  
+  // Title / Branding Header
+  rows.push(["DOORMAN CONCIERGE SERVICES"]);
+  if (propertyTitle) {
+    rows.push([`Reservations Report for: ${propertyTitle}`]);
+  } else {
+    rows.push(["All Reservations Report"]);
+  }
+  rows.push([`Generated on: ${new Date().toLocaleDateString()}`]);
+  rows.push([]); // blank row
+  
+  // Table Headers
+  rows.push([
+    "Property",
+    "Guest Name",
+    "Platform",
+    "Check-in",
+    "Check-out",
+    "Nights",
+    "Gross Revenue (€)",
+    "Doorman Commission (€)",
+    "Owner Payout (€)"
+  ]);
+  
+  // Data rows
+  bookings.forEach(b => {
+    rows.push([
+      b.propertyTitle || propertyTitle || "—",
+      b.guest_name || b.summary || "—",
+      b.platform ? (b.platform.charAt(0).toUpperCase() + b.platform.slice(1)) : "Resaoff",
+      formatDateToEU(b.start_date),
+      formatDateToEU(b.end_date),
+      b.nights || 0,
+      b.price ? parseFloat(b.price) : 0,
+      b.doorman_commission ? parseFloat(b.doorman_commission) : 0,
+      b.owner_payout ? parseFloat(b.owner_payout) : 0
+    ]);
+  });
+  
+  // Blank row
+  rows.push([]);
+  
+  // Totals Row
+  const totalGross = bookings.reduce((sum, b) => sum + parseFloat(b.price || 0), 0);
+  const totalDoorman = bookings.reduce((sum, b) => sum + parseFloat(b.doorman_commission || 0), 0);
+  const totalOwner = bookings.reduce((sum, b) => sum + parseFloat(b.owner_payout || 0), 0);
+  const totalNights = bookings.reduce((sum, b) => sum + (b.nights || 0), 0);
+  
+  rows.push([
+    "TOTALS",
+    "",
+    "",
+    "",
+    "",
+    totalNights,
+    totalGross,
+    totalDoorman,
+    totalOwner
+  ]);
+  
+  // Create workbook and sheet
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  
+  // Merge title cells
+  ws['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }, // merge row 0 col 0-8
+    { s: { r: 1, c: 0 }, e: { r: 1, c: 8 } }, // merge row 1 col 0-8
+    { s: { r: 2, c: 0 }, e: { r: 2, c: 8 } }  // merge row 2 col 0-8
+  ];
+  
+  // Adjust column widths
+  const max_lens = [22, 22, 14, 14, 14, 10, 18, 22, 18];
+  ws['!cols'] = max_lens.map(w => ({ wch: w }));
+  
+  XLSX.utils.book_append_sheet(wb, ws, "Reservations");
+  
+  // Save file
+  const filename = propertyTitle 
+    ? `doorman_report_${propertyTitle.replace(/\s+/g, '_').toLowerCase()}.xlsx`
+    : `doorman_report_all.xlsx`;
+  XLSX.writeFile(wb, filename);
+};
+
+const isSendingEmail = ref(false);
+
+const sendOwnerReportEmail = async () => {
+  const prop = selectedConciergeDetailsProperty.value;
+  if (!prop) return;
+  if (!prop.owner_email) {
+    alert("Owner email address is not configured for this property. Please edit the property and specify an email address first.");
+    return;
+  }
+  
+  let periodText = "All Time";
+  let queryParams = "";
+  
+  if (emailReportPeriod.value.type === 'selected') {
+    const year = currentYear.value;
+    const month = currentMonth.value;
+    const sDate = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    const eDate = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+    queryParams = `?start_date=${sDate}&end_date=${eDate}`;
+    periodText = `${monthNames[month]} ${year}`;
+  } else if (emailReportPeriod.value.type === 'custom') {
+    const year = emailReportPeriod.value.year;
+    const month = emailReportPeriod.value.month;
+    const sDate = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    const eDate = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+    queryParams = `?start_date=${sDate}&end_date=${eDate}`;
+    periodText = `${monthNames[month]} ${year}`;
+  }
+  
+  if (!confirm(`Are you sure you want to send the Excel report (${periodText}) to the owner (${prop.owner_name || 'Owner'} - ${prop.owner_email})?`)) {
+    return;
+  }
+  
+  const token = localStorage.getItem("admin_token");
+  isSendingEmail.value = true;
+  
+  const url = `${backendUrl}/concierge/${prop.id}/send-report-email${queryParams}`;
+  
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+    if (res.ok) {
+      alert(`Excel report for ${periodText} has been sent successfully to the property owner's email address!`);
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.detail}`);
+    }
+  } catch (err) {
+    console.error(err);
+    alert("Failed to send email. Network error.");
+  } finally {
+    isSendingEmail.value = false;
+  }
+};
+
+const conciergeReportTrackingRows = computed(() => {
+  const rows = [];
+  
+  for (const prop of conciergeProperties.value) {
+    if (!prop.bookings) continue;
+    
+    const periods = new Set();
+    
+    for (const b of prop.bookings) {
+      if (!b.start_date) continue;
+      const s = parseISODateLocal(b.start_date);
+      const year = s.getFullYear();
+      const month = s.getMonth();
+      periods.add(`${year}-${month}`);
+    }
+    
+    const sortedPeriods = Array.from(periods).sort((a, b) => {
+      const [yA, mA] = a.split('-').map(Number);
+      const [yB, mB] = b.split('-').map(Number);
+      return yB !== yA ? yB - yA : mB - mA;
+    });
+    
+    for (const pStr of sortedPeriods) {
+      const [year, month] = pStr.split('-').map(Number);
+      
+      const match = conciergeReports.value.find(
+        r => r.property_id === prop.id && r.year === year && r.month === month
+      );
+      
+      rows.push({
+        id: `${prop.id}-${year}-${month}`,
+        propertyId: prop.id,
+        propertyTitle: prop.title,
+        ownerName: prop.owner_name || "—",
+        ownerEmail: prop.owner_email || "—",
+        year,
+        month,
+        monthName: monthNames[month],
+        status: match ? match.status : "not_sent",
+        lastSentAt: match ? match.last_sent_at : null
+      });
+    }
+  }
+  
+  return rows;
+});
+
+const sendTrackingReportEmail = async (row) => {
+  if (!row.ownerEmail || row.ownerEmail === "—") {
+    alert("Owner email address is not configured for this property. Please edit the property first.");
+    return;
+  }
+  
+  const periodText = `${row.monthName} ${row.year}`;
+  if (!confirm(`Are you sure you want to send the Excel report (${periodText}) to the owner (${row.ownerName} - ${row.ownerEmail})?`)) {
+    return;
+  }
+  
+  const token = localStorage.getItem("admin_token");
+  isSendingEmail.value = true;
+  
+  const url = `${backendUrl}/concierge/${row.propertyId}/send-report-email?year=${row.year}&month=${row.month}`;
+  
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+    if (res.ok) {
+      alert(`Excel report for ${periodText} has been sent successfully to the property owner's email address!`);
+      await fetchConciergeReports();
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.detail}`);
+    }
+  } catch (err) {
+    console.error(err);
+    alert("Failed to send email. Network error.");
+  } finally {
+    isSendingEmail.value = false;
+  }
+};
+
+const filteredReportTrackingRows = computed(() => {
+  let list = conciergeReportTrackingRows.value || [];
+  
+  const s = reportsFilter.value.search.trim().toLowerCase();
+  if (s) {
+    list = list.filter(row => 
+      row.propertyTitle.toLowerCase().includes(s) || 
+      row.ownerName.toLowerCase().includes(s) ||
+      row.ownerEmail.toLowerCase().includes(s)
+    );
+  }
+  
+  const stat = reportsFilter.value.status;
+  if (stat !== 'all') {
+    list = list.filter(row => row.status === stat);
+  }
+  
+  return list;
+});
+
+const reportsTotalPages = computed(() => {
+  return Math.ceil(filteredReportTrackingRows.value.length / reportsPerPage.value) || 1;
+});
+
+const paginatedReportTrackingRows = computed(() => {
+  const start = (reportsCurrentPage.value - 1) * reportsPerPage.value;
+  const end = start + reportsPerPage.value;
+  return filteredReportTrackingRows.value.slice(start, end);
+});
+
+watch([reportsFilter, reportsPerPage], () => {
+  reportsCurrentPage.value = 1;
+}, { deep: true });
+
+const findBookingsForDate = (property, dateObj) => {
+  if (!property.bookings) return [];
+  
+  return property.bookings.filter(booking => {
+    const cur = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate());
+    const s = parseISODateLocal(booking.start_date);
+    const e = parseISODateLocal(booking.end_date);
+    return cur >= s && cur <= e;
+  });
+};
+
+const prevMonth = () => {
+  if (currentMonth.value === 0) {
+    currentMonth.value = 11;
+    currentYear.value--;
+  } else {
+    currentMonth.value--;
+  }
+};
+
+const nextMonth = () => {
+  if (currentMonth.value === 11) {
+    currentMonth.value = 0;
+    currentYear.value++;
+  } else {
+    currentMonth.value++;
+  }
+};
+
+const openPropertyDetails = (prop) => {
+  selectedConciergeDetailsProperty.value = prop;
+  showConciergeDetailsModal.value = true;
+};
+
+const openBookingModal = (prop, startDate = "", endDate = "") => {
+  selectedBookingProperty.value = prop;
+  newBooking.value = {
+    start_date: startDate,
+    end_date: endDate,
+    guest_name: "",
+    price: null
+  };
+  showBookingModal.value = true;
+};
+
+const addManualBooking = async () => {
+  const token = localStorage.getItem("admin_token");
+  const propId = selectedBookingProperty.value.id;
+  try {
+    const res = await fetch(`${backendUrl}/concierge/${propId}/bookings`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(newBooking.value),
+    });
+    if (res.ok) {
+      await fetchConciergeProperties();
+      alert("Reservation added successfully!");
+      showBookingModal.value = false;
+      
+      if (selectedConciergeDetailsProperty.value && selectedConciergeDetailsProperty.value.id === propId) {
+        selectedConciergeDetailsProperty.value = conciergeProperties.value.find(p => p.id === propId);
+      }
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.detail}`);
+    }
+  } catch (err) {
+    alert("Network error.");
+  }
+};
+
+const deleteManualBooking = async (bookingId) => {
+  if (!confirm("Are you sure you want to cancel this reservation?")) return;
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/concierge/bookings/${bookingId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok) {
+      await fetchConciergeProperties();
+      alert("Reservation canceled successfully!");
+      showBookingDetailsModal.value = false;
+      
+      if (selectedConciergeDetailsProperty.value) {
+        const propId = selectedConciergeDetailsProperty.value.id;
+        selectedConciergeDetailsProperty.value = conciergeProperties.value.find(p => p.id === propId);
+      }
+    } else {
+      alert("Failed to cancel reservation.");
+    }
+  } catch (err) {
+    alert("Network error.");
+  }
+};
+
+const updateBookingDetails = async () => {
+  const token = localStorage.getItem("admin_token");
+  const bId = selectedBookingDetail.value.id;
+  try {
+    const res = await fetch(`${backendUrl}/concierge/bookings/${bId}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        guest_name: selectedBookingDetail.value.guest_name,
+        price: selectedBookingDetail.value.price,
+        platform: selectedBookingDetail.value.platform || "resaoff",
+        platform_fee: selectedBookingDetail.value.platform_fee || 0,
+        commission_rate: selectedBookingDetail.value.commission_rate || 20
+      }),
+    });
+    if (res.ok) {
+      await fetchConciergeProperties();
+      alert("Reservation details updated successfully!");
+      showBookingDetailsModal.value = false;
+      
+      if (selectedConciergeDetailsProperty.value) {
+        const propId = selectedConciergeDetailsProperty.value.id;
+        selectedConciergeDetailsProperty.value = conciergeProperties.value.find(p => p.id === propId);
+      }
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.detail}`);
+    }
+  } catch (err) {
+    alert("Network error.");
+  }
+};
+
+const openPropertyFullPage = (prop) => {
+  selectedConciergeDetailsProperty.value = prop;
+  currentConciergeView.value = 'property-details';
+  resetBookingForm();
+};
+
+const selectBookingForEdit = (b) => {
+  bookingForm.value = {
+    id: b.id,
+    start_date: b.start_date,
+    end_date: b.end_date,
+    guest_name: b.guest_name || b.summary,
+    price: b.price || 0,
+    platform: b.platform || "resaoff",
+    platform_fee: b.platform_fee || 0,
+    commission_rate: b.commission_rate || 20
+  };
+};
+
+const resetBookingForm = () => {
+  bookingForm.value = {
+    id: null,
+    start_date: "",
+    end_date: "",
+    guest_name: "",
+    price: 0,
+    platform: "resaoff",
+    platform_fee: 0,
+    commission_rate: 20
+  };
+  quickBookingPropertyId.value = null;
+};
+
+const openQuickBooking = () => {
+  resetBookingForm();
+  if (conciergeProperties.value.length === 0) {
+    alert("Please add a property first before creating a reservation.");
+    return;
+  }
+  quickBookingPropertyId.value = conciergeProperties.value[0].id;
+  currentConciergeView.value = 'add-reservation';
+};
+
+const saveQuickBooking = async () => {
+  if (!quickBookingPropertyId.value) {
+    alert("Please select a property first.");
+    return;
+  }
+  const token = localStorage.getItem("admin_token");
+  const propId = quickBookingPropertyId.value;
+  
+  const payload = {
+    start_date: bookingForm.value.start_date,
+    end_date: bookingForm.value.end_date,
+    guest_name: bookingForm.value.guest_name,
+    price: bookingForm.value.price,
+    platform: bookingForm.value.platform,
+    platform_fee: bookingForm.value.platform_fee,
+    commission_rate: bookingForm.value.commission_rate
+  };
+  
+  try {
+    const res = await fetch(`${backendUrl}/concierge/${propId}/bookings`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    });
+    if (res.ok) {
+      await fetchConciergeProperties();
+      alert("Reservation added successfully!");
+      resetBookingForm();
+      currentConciergeView.value = 'calendar';
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.detail}`);
+    }
+  } catch (err) {
+    alert("Network error.");
+  }
+};
+
+const saveAdvancedBooking = async () => {
+  const token = localStorage.getItem("admin_token");
+  const propId = selectedConciergeDetailsProperty.value.id;
+  const isEdit = bookingForm.value.id !== null;
+  const url = isEdit 
+    ? `${backendUrl}/concierge/bookings/${bookingForm.value.id}` 
+    : `${backendUrl}/concierge/${propId}/bookings`;
+  const method = isEdit ? "PUT" : "POST";
+  
+  const payload = {
+    start_date: bookingForm.value.start_date,
+    end_date: bookingForm.value.end_date,
+    guest_name: bookingForm.value.guest_name,
+    price: bookingForm.value.price,
+    platform: bookingForm.value.platform,
+    platform_fee: bookingForm.value.platform_fee,
+    commission_rate: bookingForm.value.commission_rate
+  };
+  
+  try {
+    const res = await fetch(url, {
+      method: method,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    });
+    if (res.ok) {
+      await fetchConciergeProperties();
+      selectedConciergeDetailsProperty.value = conciergeProperties.value.find(p => p.id === propId);
+      alert(isEdit ? "Reservation updated successfully!" : "Reservation added successfully!");
+      resetBookingForm();
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.detail}`);
+    }
+  } catch (err) {
+    alert("Network error.");
+  }
+};
+
+const deleteConciergeBookingInDetails = async (bookingId) => {
+  if (!confirm("Are you sure you want to cancel this reservation?")) return;
+  const token = localStorage.getItem("admin_token");
+  const propId = selectedConciergeDetailsProperty.value.id;
+  try {
+    const res = await fetch(`${backendUrl}/concierge/bookings/${bookingId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok) {
+      await fetchConciergeProperties();
+      selectedConciergeDetailsProperty.value = conciergeProperties.value.find(p => p.id === propId);
+      alert("Reservation canceled successfully!");
+      if (bookingForm.value.id === bookingId) {
+        resetBookingForm();
+      }
+    } else {
+      alert("Failed to delete booking.");
+    }
+  } catch (err) {
+    alert("Network error.");
+  }
+};
+
+const handleDayCellClick = (prop, day) => {
+  const state = getBookingState(prop, day);
+  openPropertyFullPage(prop);
+  if (state.isBooked) {
+    selectBookingForEdit(state.booking);
+  } else {
+    const dateStr = formatDateToISO(day);
+    const nextDay = new Date(day.getTime() + 24 * 60 * 60 * 1000);
+    const nextDayStr = formatDateToISO(nextDay);
+    
+    bookingForm.value = {
+      id: null,
+      start_date: dateStr,
+      end_date: nextDayStr,
+      guest_name: "",
+      price: 0,
+      platform: "resaoff",
+      platform_fee: 0,
+      commission_rate: 20
+    };
+  }
+};
+
 const fetchUsers = async () => {
   if (!isSuperuser.value) return;
   const token = localStorage.getItem("admin_token");
@@ -542,6 +1835,14 @@ const approveBlogPost = async (id) => {
 
 const isEditing = ref(false);
 const editingId = ref(null);
+const showPropertyForm = ref(false);
+
+const startAddProperty = () => {
+  isEditing.value = false;
+  editingId.value = null;
+  resetForm();
+  showPropertyForm.value = true;
+};
 
 const startEdit = (prop) => {
   isEditing.value = true;
@@ -558,13 +1859,15 @@ const startEdit = (prop) => {
     clone.details.transport_info = [];
   }
   newProperty.value = clone;
-  // Scroll to form
+  showPropertyForm.value = true;
+  // Scroll to top
   window.scrollTo({ top: 0, behavior: "smooth" });
 };
 
 const cancelEdit = () => {
   isEditing.value = false;
   editingId.value = null;
+  showPropertyForm.value = false;
   resetForm();
 };
 
@@ -657,6 +1960,7 @@ const addProperty = async () => {
       await fetchProperties();
       alert("Property added successfully!");
       resetForm();
+      showPropertyForm.value = false;
     } else {
       if (res.status === 401) return handleLogout();
       const errorData = await res.json();
@@ -669,17 +1973,27 @@ const addProperty = async () => {
 
 const isEditingBlog = ref(false);
 const editingBlogId = ref(null);
+const showBlogForm = ref(false);
+
+const startAddBlog = () => {
+  isEditingBlog.value = false;
+  editingBlogId.value = null;
+  resetBlogForm();
+  showBlogForm.value = true;
+};
 
 const startEditBlog = (post) => {
   isEditingBlog.value = true;
   editingBlogId.value = post.id;
   newBlogPost.value = JSON.parse(JSON.stringify(post));
+  showBlogForm.value = true;
   window.scrollTo({ top: 0, behavior: "smooth" });
 };
 
 const cancelEditBlog = () => {
   isEditingBlog.value = false;
   editingBlogId.value = null;
+  showBlogForm.value = false;
   resetBlogForm();
 };
 
@@ -715,6 +2029,7 @@ const addBlogPost = async () => {
       await fetchBlogPosts();
       alert("Blog post added successfully!");
       resetBlogForm();
+      showBlogForm.value = false;
     } else {
       const err = await res.json();
       alert(`Error: ${err.detail}`);
@@ -1091,6 +2406,7 @@ const addResearchListing = async () => {
       await fetchResearchListings();
       alert("Research listing added!");
       resetResearchForm();
+      showResearchForm.value = false;
     } else {
       const errData = await res.json();
       alert(`Error: ${errData.detail}`);
@@ -1098,6 +2414,13 @@ const addResearchListing = async () => {
   } catch (err) {
     alert("Network error.");
   }
+};
+
+const startAddResearch = () => {
+  isEditingResearch.value = false;
+  editingResearchId.value = null;
+  resetResearchForm();
+  showResearchForm.value = true;
 };
 
 const startEditResearch = (listing) => {
@@ -1124,12 +2447,13 @@ const startEditResearch = (listing) => {
 
     tag_ids: listing.tags ? listing.tags.map((t) => t.id) : [],
   };
-
-  // Scroll to form
+  showResearchForm.value = true;
+  // Scroll to top
   window.scrollTo({ top: 0, behavior: "smooth" });
 };
 
 const cancelEditResearch = () => {
+  showResearchForm.value = false;
   resetResearchForm();
 };
 
@@ -1141,7 +2465,7 @@ const updateResearchListing = async () => {
       l.id !== editingResearchId.value
   );
   if (exists) {
-    alert("This URL already exists in another listing! / Bu URL başka bir kayıtta zaten mevcut!");
+    alert("This URL already exists in another listing!");
     return;
   }
 
@@ -1302,85 +2626,161 @@ onMounted(async () => {
   fetchResearchListings();
   fetchBuyers();
   fetchResearchTags();
+  fetchConciergeProperties();
+  fetchConciergeReports();
+  fetchCleaners();
+  fetchCleaningAssignments();
 
   if (isSuperuser.value) {
     fetchUsers();
     fetchPasswordResets();
   }
 });
+
+watch(cleaningSelectedDate, () => {
+  fetchCleaningAssignments();
+});
 </script>
 
 <template>
   <div class="admin-view">
-    <div class="admin-container">
-      <div class="admin-header">
-        <div class="header-branding">
+    <!-- SIDEBAR -->
+    <aside class="admin-sidebar">
+      <div class="sidebar-branding">
+        <div class="logo-wrapper">
           <img
             src="/doormanlogo.webp"
             alt="Doorman Admin"
-            class="admin-logo-img"
+            class="sidebar-logo-img"
           />
-          <h1 class="admin-title">Admin Panel</h1>
         </div>
-        <div class="header-actions">
-          <span class="role-badge" :class="userRole">{{ userRole }}</span>
-          <button @click="handleLogout" class="logout-btn">Logout</button>
-        </div>
+        <span class="sidebar-title">Doorman Admin</span>
       </div>
 
-      <!-- TABS -->
-      <div class="admin-tabs">
+      <nav class="sidebar-tabs">
         <button
           @click="activeTab = 'properties'"
           :class="{ active: activeTab === 'properties' }"
+          class="sidebar-tab-btn"
+          title="Properties"
         >
-          Properties
+          <span class="material-icons-outlined">apartment</span>
+          <span class="tab-label">Properties</span>
         </button>
+
         <button
           @click="activeTab = 'blogs'"
           :class="{ active: activeTab === 'blogs' }"
+          class="sidebar-tab-btn"
+          title="Blog Posts"
         >
-          Blog Posts
+          <span class="material-icons-outlined">article</span>
+          <span class="tab-label">Blog Posts</span>
         </button>
+
         <button
           @click="activeTab = 'research'"
           :class="{ active: activeTab === 'research' }"
+          class="sidebar-tab-btn"
+          title="Research"
         >
-          Research
+          <span class="material-icons-outlined">analytics</span>
+          <span class="tab-label">Research</span>
+        </button>
+
+        <button
+          @click="activeTab = 'concierge'"
+          :class="{ active: activeTab === 'concierge' }"
+          class="sidebar-tab-btn"
+          title="Concierge"
+        >
+          <span class="material-icons-outlined">room_service</span>
+          <span class="tab-label">Concierge</span>
         </button>
 
         <button
           v-if="isSuperuser"
           @click="activeTab = 'users'"
           :class="{ active: activeTab === 'users' }"
+          class="sidebar-tab-btn"
+          title="User Management"
         >
-          User Management
+          <span class="material-icons-outlined">people</span>
+          <span class="tab-label">Users</span>
         </button>
+
         <button
           @click="activeTab = 'messages'"
           :class="{ active: activeTab === 'messages' }"
-          style="position: relative"
+          class="sidebar-tab-btn"
+          title="Contact Messages"
         >
-          Contact Messages
-          <span v-if="unreadMessagesCount > 0" class="unread-badge">{{
+          <div class="icon-badge-wrapper">
+            <span class="material-icons-outlined">email</span>
+            <span v-if="unreadMessagesCount > 0" class="unread-badge-dot"></span>
+          </div>
+          <span class="tab-label">Messages</span>
+          <span v-if="unreadMessagesCount > 0" class="unread-badge-text">{{
             unreadMessagesCount
           }}</span>
         </button>
+
         <button
           @click="activeTab = 'profile'"
           :class="{ active: activeTab === 'profile' }"
+          class="sidebar-tab-btn"
+          title="Profile"
         >
-          Profile
+          <span class="material-icons-outlined">manage_accounts</span>
+          <span class="tab-label">Profile</span>
+        </button>
+      </nav>
+
+      <!-- SIDEBAR FOOTER -->
+      <div class="sidebar-footer">
+        <div class="user-info">
+          <span class="material-icons-outlined user-avatar">account_circle</span>
+          <div class="user-meta">
+            <span class="user-email">{{ userEmail }}</span>
+            <span class="role-badge" :class="userRole">{{ userRole }}</span>
+          </div>
+        </div>
+        <button @click="handleLogout" class="sidebar-logout-btn" title="Logout">
+          <span class="material-icons-outlined">logout</span>
+          <span class="tab-label">Logout</span>
         </button>
       </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="admin-main-content">
+      <div class="admin-content-wrap">
 
       <!-- PROPERTIES MANAGEMENT -->
       <div v-if="activeTab === 'properties'" class="tab-content">
+        <!-- Header row -->
+        <div class="tab-header-row">
+          <h1 class="tab-title">{{ showPropertyForm ? (isEditing ? 'Edit Property' : 'Add New Property') : 'Properties' }}</h1>
+          <button 
+            v-if="!showPropertyForm" 
+            @click="startAddProperty" 
+            class="action-header-btn"
+          >
+            <span class="material-icons-outlined">add</span>
+            Add New Property
+          </button>
+          <button 
+            v-else 
+            @click="cancelEdit" 
+            class="action-header-btn secondary-btn"
+          >
+            <span class="material-icons-outlined">arrow_back</span>
+            Back to List
+          </button>
+        </div>
+
         <!-- Add/Edit Form -->
-        <section class="admin-section card" :class="{ 'edit-mode': isEditing }">
-          <h2 class="section-subtitle">
-            {{ isEditing ? "Edit Property" : "Add New Property" }}
-          </h2>
+        <section v-if="showPropertyForm" class="admin-section card" :class="{ 'edit-mode': isEditing }">
           <form
             @submit.prevent="isEditing ? updateProperty() : addProperty()"
             class="admin-form"
@@ -1620,7 +3020,7 @@ onMounted(async () => {
                   v-else-if="descriptionTab === 'tr'"
                   v-model="newProperty.details.description_tr"
                   rows="4"
-                  placeholder="Türkçe açıklama..."
+                  placeholder="Turkish description..."
                 ></textarea>
               </div>
               <div class="form-field checkboxes">
@@ -1726,7 +3126,7 @@ onMounted(async () => {
         </section>
 
         <!-- List -->
-        <section class="admin-section card">
+        <section v-else class="admin-section card">
           <h2 class="section-subtitle">Existing Properties</h2>
           <div v-if="isLoading">Loading...</div>
           <div v-else class="property-list">
@@ -1816,14 +3216,33 @@ onMounted(async () => {
 
       <!-- BLOG MANAGEMENT -->
       <div v-if="activeTab === 'blogs'" class="tab-content">
+        <!-- Header row -->
+        <div class="tab-header-row">
+          <h1 class="tab-title">{{ showBlogForm ? (isEditingBlog ? 'Edit Blog Post' : 'Add New Blog Post') : 'Blog Posts' }}</h1>
+          <button 
+            v-if="!showBlogForm" 
+            @click="startAddBlog" 
+            class="action-header-btn"
+          >
+            <span class="material-icons-outlined">add</span>
+            Add New Post
+          </button>
+          <button 
+            v-else 
+            @click="cancelEditBlog" 
+            class="action-header-btn secondary-btn"
+          >
+            <span class="material-icons-outlined">arrow_back</span>
+            Back to List
+          </button>
+        </div>
+
         <!-- Add/Edit Blog Form -->
         <section
+          v-if="showBlogForm"
           class="admin-section card"
           :class="{ 'edit-mode': isEditingBlog }"
         >
-          <h2 class="section-subtitle">
-            {{ isEditingBlog ? "Edit Blog Post" : "Add New Blog Post" }}
-          </h2>
           <form
             @submit.prevent="isEditingBlog ? updateBlogPost() : addBlogPost()"
             class="admin-form"
@@ -1998,7 +3417,7 @@ onMounted(async () => {
         </section>
 
         <!-- Blog list table -->
-        <section class="admin-section card">
+        <section v-else class="admin-section card">
           <h2 class="section-subtitle">Manage Blog Posts</h2>
           <div class="property-list">
             <table>
@@ -2209,7 +3628,7 @@ onMounted(async () => {
           class="admin-section card"
           style="margin-top: 2rem"
         >
-          <h2 class="section-subtitle">Buyer Management (Alıcılar)</h2>
+          <h2 class="section-subtitle">Buyer Management</h2>
           <form
             @submit.prevent="addBuyer"
             class="admin-form"
@@ -2674,17 +4093,32 @@ onMounted(async () => {
 
       <!-- RESEARCH MANAGEMENT -->
       <div v-if="activeTab === 'research'" class="tab-content">
+        <!-- Header row -->
+        <div class="tab-header-row">
+          <h1 class="tab-title">{{ showResearchForm ? (isEditingResearch ? 'Edit Research Property' : 'Add Research Property') : 'Research' }}</h1>
+          <button 
+            v-if="!showResearchForm" 
+            @click="startAddResearch" 
+            class="action-header-btn"
+          >
+            <span class="material-icons-outlined">add</span>
+            Add to Research
+          </button>
+          <button 
+            v-else 
+            @click="cancelEditResearch" 
+            class="action-header-btn secondary-btn"
+          >
+            <span class="material-icons-outlined">arrow_back</span>
+            Back to List
+          </button>
+        </div>
+
         <section
+          v-if="showResearchForm"
           class="admin-section card"
           :class="{ 'edit-mode': isEditingResearch }"
         >
-          <h2 class="section-subtitle">
-            {{
-              isEditingResearch
-                ? "Edit Research Property"
-                : "Add Research Property"
-            }}
-          </h2>
           <form
             @submit.prevent="
               isEditingResearch ? updateResearchListing() : addResearchListing()
@@ -2902,7 +4336,7 @@ onMounted(async () => {
 
               <div class="form-field full-width">
                 <label
-                  >Internal Notes / Comments (Raporda görünür)
+                  >Internal Notes / Comments (Shown on PDF report)
                   <span
                     v-if="newResearch.internal_notes"
                     style="color: green; font-size: 0.7rem"
@@ -2944,7 +4378,7 @@ onMounted(async () => {
           </form>
         </section>
 
-        <section class="admin-section card">
+        <section v-else class="admin-section card">
           <div
             class="section-header-row"
             style="
@@ -3248,70 +4682,1551 @@ onMounted(async () => {
           </div>
         </section>
       </div>
-    </div>
+
+      <!-- CONCIERGE SERVICES MANAGEMENT -->
+      <div v-if="activeTab === 'concierge'" class="tab-content">
+        <!-- Header row -->
+        <div class="tab-header-row">
+          <h1 class="tab-title">
+            {{ showConciergeForm ? (isEditingConcierge ? 'Edit Concierge Property' : 'Add Concierge Property') : (currentConciergeView === 'property-details' ? (selectedConciergeDetailsProperty?.title + ' Dashboard') : currentConciergeView === 'add-reservation' ? 'Add New Reservation' : currentConciergeView === 'reservations-list' ? 'All Reservations' : currentConciergeView === 'cleaning' ? 'Cleaning Schedule' : 'Concierge Services') }}
+          </h1>
+          <div style="display: flex; gap: 1rem;">
+            <button 
+              v-if="!showConciergeForm && currentConciergeView === 'calendar'" 
+              @click="startAddConcierge" 
+              class="action-header-btn secondary-btn"
+            >
+              <span class="material-icons-outlined">add</span>
+              Add Short-Term Property
+            </button>
+            <button 
+              v-if="!showConciergeForm && currentConciergeView === 'calendar'" 
+              @click="currentConciergeView = 'reservations-list'" 
+              class="action-header-btn secondary-btn"
+            >
+              <span class="material-icons-outlined">list_alt</span>
+              Reservations List
+            </button>
+            <button 
+              v-if="!showConciergeForm && currentConciergeView === 'calendar'" 
+              @click="currentConciergeView = 'cleaning'" 
+              class="action-header-btn secondary-btn"
+            >
+              <span class="material-icons-outlined">cleaning_services</span>
+              Cleaning
+            </button>
+            <button 
+              v-if="!showConciergeForm && currentConciergeView === 'calendar'" 
+              @click="currentConciergeView = 'reports-tracking'" 
+              class="action-header-btn secondary-btn"
+            >
+              <span class="material-icons-outlined">mail_outline</span>
+              Reports Tracking
+            </button>
+            <button 
+              v-if="!showConciergeForm && currentConciergeView === 'calendar'" 
+              @click="openQuickBooking" 
+              class="action-header-btn"
+              style="background-color: var(--accent); color: var(--primary);"
+            >
+              <span class="material-icons-outlined">calendar_today</span>
+              Add Reservation
+            </button>
+            <button 
+              v-if="!showConciergeForm && currentConciergeView === 'property-details'" 
+              @click="startEditConcierge(selectedConciergeDetailsProperty)" 
+              class="action-header-btn"
+              style="background-color: var(--accent); color: var(--primary);"
+            >
+              <span class="material-icons-outlined">edit</span>
+              Edit Property Info
+            </button>
+            <button 
+              v-if="!showConciergeForm && (currentConciergeView === 'property-details' || currentConciergeView === 'add-reservation' || currentConciergeView === 'reservations-list' || currentConciergeView === 'cleaning' || currentConciergeView === 'reports-tracking')" 
+              @click="currentConciergeView = 'calendar'" 
+              class="action-header-btn secondary-btn"
+            >
+              <span class="material-icons-outlined">arrow_back</span>
+              Back to Timeline
+            </button>
+            <button 
+              v-if="showConciergeForm" 
+              @click="cancelEditConcierge" 
+              class="action-header-btn secondary-btn"
+            >
+              <span class="material-icons-outlined">arrow_back</span>
+              Back to Dashboard
+            </button>
+          </div>
+        </div>
+
+        <!-- Add/Edit Concierge Form -->
+        <section v-if="showConciergeForm" class="admin-section card" :class="{ 'edit-mode': isEditingConcierge }">
+          <form @submit.prevent="isEditingConcierge ? updateConciergeProperty() : addConciergeProperty()" class="admin-form">
+            <div class="form-grid">
+              <div class="form-field full-width">
+                <label>Property Title / Name</label>
+                <input v-model="newConcierge.title" type="text" required placeholder="e.g. Cozy Marais Apartment" />
+              </div>
+
+              <div class="form-field full-width">
+                <label>Address</label>
+                <input v-model="newConcierge.address" type="text" placeholder="e.g. 12 Rue des Rosiers, 75004 Paris" />
+              </div>
+
+              <div class="form-field">
+                <label>Owner Name</label>
+                <input v-model="newConcierge.owner_name" type="text" placeholder="e.g. John Doe" />
+              </div>
+
+              <div class="form-field">
+                <label>Owner Email</label>
+                <input v-model="newConcierge.owner_email" type="email" placeholder="e.g. owner@example.com" />
+              </div>
+            </div>
+            <div class="form-actions" style="margin-top: 2rem; display: flex; gap: 1rem">
+              <button type="submit" class="submit-btn">
+                {{ isEditingConcierge ? "Save Changes" : "Add Property" }}
+              </button>
+              <button type="button" @click="cancelEditConcierge" class="cancel-btn">
+                Cancel
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <!-- Reservations List Full Page -->
+        <div v-else-if="currentConciergeView === 'reservations-list'" class="concierge-dashboard">
+          <section class="admin-section card" style="padding: 1.5rem;">
+
+            <!-- Filters Row -->
+            <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1.5rem;">
+              <!-- Search -->
+              <div style="flex: 1; min-width: 180px; position: relative;">
+                <span class="material-icons-outlined" style="position: absolute; left: 0.75rem; top: 50%; transform: translateY(-50%); color: #9ca3af; font-size: 1.1rem;">search</span>
+                <input
+                  v-model="reservationListFilter.search"
+                  type="text"
+                  placeholder="Search guest or property..."
+                  style="width: 100%; padding: 0.6rem 1rem 0.6rem 2.5rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem;"
+                />
+              </div>
+              <!-- Year Filter -->
+              <select v-model="reservationListFilter.year" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background: white; min-width: 110px;">
+                <option value="all">All Years</option>
+                <option v-for="yr in availableYears" :key="yr" :value="yr">{{ yr }}</option>
+              </select>
+              <!-- Month Filter -->
+              <select v-model="reservationListFilter.month" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background: white; min-width: 130px;">
+                <option value="all">All Months</option>
+                <option value="0">January</option>
+                <option value="1">February</option>
+                <option value="2">March</option>
+                <option value="3">April</option>
+                <option value="4">May</option>
+                <option value="5">June</option>
+                <option value="6">July</option>
+                <option value="7">August</option>
+                <option value="8">September</option>
+                <option value="9">October</option>
+                <option value="10">November</option>
+                <option value="11">December</option>
+              </select>
+              <!-- Property Filter -->
+              <select v-model="reservationListFilter.property" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background: white; min-width: 160px;">
+                <option value="all">All Properties</option>
+                <option v-for="prop in conciergeProperties" :key="prop.id" :value="prop.id">{{ prop.title }}</option>
+              </select>
+              <!-- Platform Filter -->
+              <select v-model="reservationListFilter.platform" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background: white; min-width: 140px;">
+                <option value="all">All Platforms</option>
+                <option value="airbnb">Airbnb</option>
+                <option value="booking">Booking.com</option>
+                <option value="resaoff">Resaoff</option>
+              </select>
+              <!-- Rows Per Page -->
+              <select v-model="reservationsPerPage" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background: white; min-width: 110px;">
+                <option :value="10">10 per page</option>
+                <option :value="20">20 per page</option>
+                <option :value="50">50 per page</option>
+                <option :value="100">100 per page</option>
+              </select>
+              <!-- Reset Button -->
+              <button
+                @click="reservationListFilter = { property: 'all', platform: 'all', search: '', year: 'all', month: 'all' }"
+                style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.85rem; background: white; color: #6b7280; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 0.35rem;"
+              >
+                <span class="material-icons-outlined" style="font-size: 1rem;">refresh</span>
+                Reset
+              </button>
+              
+              <!-- Export Excel Button -->
+              <button
+                @click="exportReservationsToExcel(allReservations)"
+                style="padding: 0.6rem 1.2rem; border: 1.5px solid #107c41; border-radius: 8px; font-size: 0.85rem; background: #107c41; color: white; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 0.35rem; font-weight: 700; margin-left: auto;"
+              >
+                <span class="material-icons-outlined" style="font-size: 1rem;">download_for_offline</span>
+                Export to Excel
+              </button>
+
+              <!-- Count badge -->
+              <span style="font-size: 0.85rem; color: #6b7280; white-space: nowrap;">
+                <strong style="color: var(--primary);">{{ allReservations.length }}</strong> reservation{{ allReservations.length !== 1 ? 's' : '' }}
+              </span>
+            </div>
+
+            <!-- Table -->
+            <div style="overflow-x: auto;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
+                <thead>
+                  <tr style="border-bottom: 2px solid #e5e7eb; background: #f9fafb; text-align: left;">
+                    <th style="padding: 0.75rem 1rem; font-weight: 700; color: #374151; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;">Platform</th>
+                    <th style="padding: 0.75rem 1rem; font-weight: 700; color: #374151; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;">Property</th>
+                    <th style="padding: 0.75rem 1rem; font-weight: 700; color: #374151; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;">Guest</th>
+                    <th style="padding: 0.75rem 1rem; font-weight: 700; color: #374151; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;">Check-in</th>
+                    <th style="padding: 0.75rem 1rem; font-weight: 700; color: #374151; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;">Check-out</th>
+                    <th style="padding: 0.75rem 1rem; font-weight: 700; color: #374151; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; text-align: center;">Nights</th>
+                    <th style="padding: 0.75rem 1rem; font-weight: 700; color: #374151; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; text-align: right;">Gross (€)</th>
+                    <th style="padding: 0.75rem 1rem; font-weight: 700; color: #374151; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; text-align: right;">Doorman (€)</th>
+                    <th style="padding: 0.75rem 1rem; font-weight: 700; color: #374151; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; text-align: right;">Owner (€)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-if="allReservations.length === 0">
+                    <td colspan="9" style="padding: 2rem; text-align: center; color: #9ca3af;">No reservations found.</td>
+                  </tr>
+                  <tr
+                    v-for="b in paginatedReservations"
+                    :key="b.id"
+                    style="border-bottom: 1px solid #f3f4f6; transition: background 0.15s; cursor: pointer;"
+                    @mouseenter="$event.currentTarget.style.background='#f9fafb'"
+                    @mouseleave="$event.currentTarget.style.background=''"
+                  >
+                    <!-- Platform badge -->
+                    <td style="padding: 0.75rem 1rem;">
+                      <span
+                        style="display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.25rem 0.6rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700;"
+                        :style="b.platform === 'airbnb' ? 'background:#fee2e2; color:#b91c1c;' : b.platform === 'booking' ? 'background:#dbeafe; color:#1d4ed8;' : 'background:#ffedd5; color:#c2410c;'"
+                      >
+                        {{ b.platform === 'airbnb' ? 'Airbnb' : b.platform === 'booking' ? 'Booking' : 'Resaoff' }}
+                      </span>
+                    </td>
+                    <!-- Property -->
+                    <td style="padding: 0.75rem 1rem; font-weight: 600; color: var(--primary);">{{ b.propertyTitle }}</td>
+                    <!-- Guest -->
+                    <td style="padding: 0.75rem 1rem; color: #374151;">{{ b.guest_name || b.summary || '—' }}</td>
+                    <!-- Check-in -->
+                    <td style="padding: 0.75rem 1rem; color: #374151;">{{ formatDateToEU(b.start_date) }}</td>
+                    <!-- Check-out -->
+                    <td style="padding: 0.75rem 1rem; color: #374151;">{{ formatDateToEU(b.end_date) }}</td>
+                    <!-- Nights -->
+                    <td style="padding: 0.75rem 1rem; text-align: center; font-weight: 600; color: #374151;">{{ b.nights || '—' }}</td>
+                    <!-- Gross -->
+                    <td style="padding: 0.75rem 1rem; text-align: right; font-weight: 600; color: #0f172a;">{{ b.price ? '€' + parseFloat(b.price).toFixed(2) : '—' }}</td>
+                    <!-- Doorman -->
+                    <td style="padding: 0.75rem 1rem; text-align: right; font-weight: 700; color: #0c4a6e;">{{ b.doorman_commission ? '€' + parseFloat(b.doorman_commission).toFixed(2) : '—' }}</td>
+                    <!-- Owner -->
+                    <td style="padding: 0.75rem 1rem; text-align: right; color: #4b5563;">{{ b.owner_payout ? '€' + parseFloat(b.owner_payout).toFixed(2) : '—' }}</td>
+                  </tr>
+                </tbody>
+                <!-- Totals footer -->
+                <tfoot v-if="allReservations.length > 0">
+                  <tr style="border-top: 2px solid #e5e7eb; background: #f0f9ff;">
+                    <td colspan="6" style="padding: 0.75rem 1rem; font-weight: 700; color: #374151; font-size: 0.8rem; text-transform: uppercase;">Totals ({{ allReservations.length }} res.)</td>
+                    <td style="padding: 0.75rem 1rem; text-align: right; font-weight: 800; color: #0f172a;">
+                      €{{ allReservations.reduce((s, b) => s + parseFloat(b.price || 0), 0).toFixed(2) }}
+                    </td>
+                    <td style="padding: 0.75rem 1rem; text-align: right; font-weight: 800; color: #0c4a6e;">
+                      €{{ allReservations.reduce((s, b) => s + parseFloat(b.doorman_commission || 0), 0).toFixed(2) }}
+                    </td>
+                    <td style="padding: 0.75rem 1rem; text-align: right; font-weight: 800; color: #4b5563;">
+                      €{{ allReservations.reduce((s, b) => s + parseFloat(b.owner_payout || 0), 0).toFixed(2) }}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+
+            <!-- Reservations Pagination Controls -->
+            <div 
+              v-if="reservationsTotalPages > 1"
+              style="display: flex; justify-content: space-between; align-items: center; margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #e2e8f0; flex-wrap: wrap; gap: 1rem;"
+            >
+              <div style="font-size: 0.85rem; color: #64748b;">
+                Showing page {{ reservationsCurrentPage }} of {{ reservationsTotalPages }} ({{ allReservations.length }} total reservations)
+              </div>
+              <div style="display: flex; gap: 0.35rem; align-items: center;">
+                <button 
+                  @click="reservationsCurrentPage = Math.max(1, reservationsCurrentPage - 1)" 
+                  :disabled="reservationsCurrentPage === 1"
+                  style="padding: 0.4rem 0.8rem; border-radius: 6px; border: 1px solid #e2e8f0; background: white; cursor: pointer; display: flex; align-items: center; gap: 0.25rem;"
+                  :style="reservationsCurrentPage === 1 ? 'opacity:0.5; cursor:not-allowed;' : ''"
+                >
+                  <span class="material-icons-outlined" style="font-size: 1rem;">chevron_left</span>
+                  Prev
+                </button>
+
+                <button 
+                  v-for="p in reservationsTotalPages" 
+                  :key="p"
+                  @click="reservationsCurrentPage = p"
+                  style="padding: 0.4rem 0.8rem; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.85rem;"
+                  :style="p === reservationsCurrentPage ? 'background: #2563eb; color: white; border: 1px solid #2563eb;' : 'background: white; color: #475569; border: 1px solid #e2e8f0;'"
+                >
+                  {{ p }}
+                </button>
+
+                <button 
+                  @click="reservationsCurrentPage = Math.min(reservationsTotalPages, reservationsCurrentPage + 1)" 
+                  :disabled="reservationsCurrentPage === reservationsTotalPages"
+                  style="padding: 0.4rem 0.8rem; border-radius: 6px; border: 1px solid #e2e8f0; background: white; cursor: pointer; display: flex; align-items: center; gap: 0.25rem;"
+                  :style="reservationsCurrentPage === reservationsTotalPages ? 'opacity:0.5; cursor:not-allowed;' : ''"
+                >
+                  Next
+                  <span class="material-icons-outlined" style="font-size: 1rem;">chevron_right</span>
+                </button>
+              </div>
+            </div>
+
+          </section>
+        </div>
+
+        <!-- Cleaning Schedule Full Page -->
+        <div v-else-if="currentConciergeView === 'cleaning'" class="concierge-dashboard">
+          <div style="display: grid; grid-template-columns: 320px 1fr; gap: 1.5rem; align-items: start;">
+
+            <!-- LEFT: Cleaner Management Panel -->
+            <div style="display: flex; flex-direction: column; gap: 1rem;">
+
+              <!-- Add Cleaner Card -->
+              <section class="admin-section card" style="padding: 1.25rem;">
+                <h3 style="font-size: 0.8rem; font-weight: 800; text-transform: uppercase; color: #64748b; margin: 0 0 1rem; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.5rem;">
+                  <span class="material-icons-outlined" style="font-size: 1rem; vertical-align: middle; margin-right: 0.35rem;">person_add</span>
+                  Add Cleaner
+                </h3>
+                <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                  <input
+                    v-model="newCleanerForm.name"
+                    type="text"
+                    placeholder="Full name *"
+                    style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;"
+                    @keyup.enter="addCleaner"
+                  />
+                  <input
+                    v-model="newCleanerForm.phone"
+                    type="text"
+                    placeholder="Phone (optional)"
+                    style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;"
+                    @keyup.enter="addCleaner"
+                  />
+                  <button @click="addCleaner" class="submit-btn" style="width: 100%; justify-content: center; padding: 0.6rem;">
+                    <span class="material-icons-outlined" style="font-size: 1rem; margin-right: 0.35rem;">add</span>
+                    Add
+                  </button>
+                </div>
+              </section>
+
+              <!-- Cleaners List Card -->
+              <section class="admin-section card" style="padding: 1.25rem;">
+                <h3 style="font-size: 0.8rem; font-weight: 800; text-transform: uppercase; color: #64748b; margin: 0 0 1rem; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.5rem;">
+                  <span class="material-icons-outlined" style="font-size: 1rem; vertical-align: middle; margin-right: 0.35rem;">group</span>
+                  Cleaners ({{ cleaners.length }})
+                </h3>
+                <div v-if="cleaners.length === 0" style="color: #9ca3af; font-size: 0.85rem; text-align: center; padding: 1rem 0;">
+                  No cleaners added yet.
+                </div>
+                <div v-for="c in cleaners" :key="c.id" style="display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0; border-bottom: 1px solid #f3f4f6;">
+                  <div>
+                    <div style="font-weight: 600; color: var(--primary); font-size: 0.9rem;">{{ c.name }}</div>
+                    <div v-if="c.phone" style="font-size: 0.75rem; color: #6b7280;">{{ c.phone }}</div>
+                  </div>
+                  <button @click="deleteCleaner(c.id)" style="border: none; background: none; color: #ef4444; cursor: pointer; padding: 0.25rem; border-radius: 4px; display: flex; align-items: center;">
+                    <span class="material-icons-outlined" style="font-size: 1.1rem;">delete_outline</span>
+                  </button>
+                </div>
+              </section>
+            </div>
+
+            <!-- RIGHT: Schedule Panel -->
+            <section class="admin-section card" style="padding: 1.25rem;">
+
+              <!-- Date Picker -->
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap;">
+                <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                  <div>
+                    <label style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.4rem;">Cleaning Date</label>
+                    <input
+                      v-model="cleaningSelectedDate"
+                      type="date"
+                      style="padding: 0.6rem 1rem; border: 1.5px solid var(--accent); border-radius: 8px; font-size: 0.95rem; font-weight: 600; color: var(--primary);"
+                    />
+                  </div>
+                  <button
+                    @click="copyCleaningSchedule"
+                    class="action-header-btn"
+                    style="margin-top: auto; padding: 0.6rem 1.25rem; background-color: #25d366; color: white; border: none; border-radius: 8px; display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 0.9rem;"
+                  >
+                    <span class="material-icons-outlined">share</span>
+                    Copy WhatsApp Message
+                  </button>
+                </div>
+                <div style="flex: 1; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 0.75rem 1rem; font-size: 0.85rem; color: #0369a1; min-width: 250px;">
+                  <span class="material-icons-outlined" style="font-size: 1rem; vertical-align: middle; margin-right: 0.25rem;">info</span>
+                  List of properties with check-out on the selected date. Assign a cleaner to each.
+                </div>
+              </div>
+
+              <!-- Checkout list for date -->
+              <div v-if="checkoutsOnSelectedDate.length === 0" style="text-align: center; padding: 2rem 0; color: #9ca3af;">
+                <span class="material-icons-outlined" style="font-size: 2.5rem; display: block; margin-bottom: 0.5rem;">event_busy</span>
+                No properties checking out on this date.
+              </div>
+
+              <div v-else style="display: flex; flex-direction: column; gap: 1.5rem;">
+                
+                <!-- Unassigned Checkouts Section -->
+                <div style="background-color: #fffbeb; border: 1px solid #fef3c7; border-radius: 12px; padding: 1.25rem;">
+                  <h4 style="font-size: 0.85rem; font-weight: 800; text-transform: uppercase; color: #b45309; margin: 0 0 0.75rem; letter-spacing: 0.05em; display: flex; align-items: center; gap: 0.35rem;">
+                    <span class="material-icons-outlined" style="font-size: 1.1rem;">pending_actions</span>
+                    Pending Checkouts ({{ unassignedCheckouts.length }})
+                  </h4>
+                  <div v-if="unassignedCheckouts.length === 0" style="color: #15803d; font-size: 0.85rem; font-weight: 600;">
+                    All properties checked out on this date have been assigned to cleaners!
+                  </div>
+                  <div v-else style="display: flex; flex-wrap: wrap; gap: 0.6rem;">
+                    <div 
+                      v-for="item in unassignedCheckouts" 
+                      :key="item.prop.id"
+                      style="background: white; border: 1px solid #fcd34d; border-radius: 8px; padding: 0.5rem 0.75rem; font-size: 0.85rem; font-weight: 600; color: var(--primary);"
+                    >
+                      {{ item.prop.title }} ({{ item.booking.guest_name || 'No Guest' }})
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Cleaners Schedule Grid -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 1.25rem;">
+                  <div 
+                    v-for="c in cleaners" 
+                    :key="c.id"
+                    style="border: 1px solid #e5e7eb; border-radius: 12px; padding: 1.25rem; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.02); display: flex; flex-direction: column; justify-content: space-between; min-height: 220px;"
+                  >
+                    <div>
+                      <!-- Cleaner Header -->
+                      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid #f3f4f6; padding-bottom: 0.5rem;">
+                        <span style="font-weight: 800; font-size: 1rem; color: var(--primary); display: flex; align-items: center; gap: 0.35rem;">
+                          <span class="material-icons-outlined" style="color: var(--accent);">person</span>
+                          {{ c.name }}
+                        </span>
+                        <span style="font-size: 0.75rem; color: #6b7280;">{{ c.phone || 'No phone' }}</span>
+                      </div>
+
+                      <!-- Assigned Properties List -->
+                      <div style="margin-bottom: 1rem;">
+                        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: #9ca3af; margin-bottom: 0.5rem;">Assigned Properties</div>
+                        
+                        <div v-if="getAssignmentsForCleaner(c.id).length === 0" style="color: #9ca3af; font-size: 0.85rem; font-style: italic;">
+                          No properties assigned on this date.
+                        </div>
+                        <div v-else style="display: flex; flex-direction: column; gap: 0.5rem;">
+                          <div 
+                            v-for="a in getAssignmentsForCleaner(c.id)" 
+                            :key="a.id"
+                            style="display: flex; align-items: center; justify-content: space-between; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.5rem 0.75rem; font-size: 0.85rem;"
+                          >
+                            <div style="flex: 1;">
+                              <strong style="color: var(--primary);">{{ a.property?.title }}</strong>
+                              <div v-if="a.notes" style="font-size: 0.75rem; color: #6b7280; margin-top: 0.15rem;">Note: {{ a.notes }}</div>
+                            </div>
+                            <button 
+                              @click="removeAssignment(a.id)" 
+                              style="border: none; background: none; color: #ef4444; cursor: pointer; padding: 0.25rem; display: flex; align-items: center;"
+                              title="Remove Assignment"
+                            >
+                              <span class="material-icons-outlined" style="font-size: 1.05rem;">close</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Assign Form for Cleaner -->
+                    <div style="border-top: 1px dashed #e2e8f0; padding-top: 1rem; margin-top: auto;">
+                      <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: #9ca3af; margin-bottom: 0.5rem;">Assign New Property</div>
+                      
+                      <div v-if="unassignedCheckouts.length === 0" style="color: #9ca3af; font-size: 0.8rem; font-style: italic;">
+                        No pending checkouts available to assign.
+                      </div>
+                      <div v-else style="display: flex; flex-direction: column; gap: 0.5rem;">
+                        <select
+                          v-model="cleanerSelectedProperty[c.id]"
+                          style="width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.85rem; background: white;"
+                        >
+                          <option value="">— Select Property —</option>
+                          <option 
+                            v-for="item in unassignedCheckouts" 
+                            :key="item.prop.id" 
+                            :value="item.prop.id"
+                          >
+                            {{ item.prop.title }} ({{ item.booking.guest_name || 'No Guest' }})
+                          </option>
+                        </select>
+                        <div style="display: flex; gap: 0.5rem;">
+                          <input
+                            v-model="cleanerAssignmentNote[c.id]"
+                            type="text"
+                            placeholder="Note (optional)"
+                            style="flex: 1; padding: 0.5rem 0.75rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.85rem;"
+                          />
+                          <button
+                            @click="assignCleaner(cleanerSelectedProperty[c.id], c.id, cleanerAssignmentNote[c.id]); cleanerSelectedProperty[c.id] = ''; cleanerAssignmentNote[c.id] = '';"
+                            class="submit-btn"
+                            style="padding: 0.5rem 1rem; font-size: 0.85rem;"
+                          >
+                            Assign
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                  </div>
+                </div>
+
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <!-- Add Reservation Full Page -->
+        <div v-else-if="currentConciergeView === 'add-reservation'" class="concierge-dashboard">
+          <section class="admin-section card" style="padding: 2rem; max-width: 680px; margin: 0 auto;">
+            <form @submit.prevent="saveQuickBooking" style="display: flex; flex-direction: column; gap: 1.5rem;">
+              
+              <!-- Property Selector -->
+              <div>
+                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Select Property</label>
+                <select v-model="quickBookingPropertyId" required style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 1rem; background: white; width: 100%; color: var(--primary); font-weight: 600;">
+                  <option v-for="prop in conciergeProperties" :key="prop.id" :value="prop.id">
+                    {{ prop.title }}{{ prop.address ? ' — ' + prop.address : '' }}
+                  </option>
+                </select>
+              </div>
+
+              <!-- Platform -->
+              <div>
+                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Platform / Source</label>
+                <select v-model="bookingForm.platform" required style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; background: white; width: 100%;">
+                  <option value="airbnb">Airbnb</option>
+                  <option value="booking">Booking.com</option>
+                  <option value="resaoff">Resaoff (Offline / Direct)</option>
+                </select>
+              </div>
+
+              <!-- Guest Name -->
+              <div>
+                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Guest Name (First & Last)</label>
+                <input v-model="bookingForm.guest_name" type="text" required placeholder="e.g. John Doe" style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
+              </div>
+
+              <!-- Check-in / Check-out dates -->
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div>
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Check-in Date</label>
+                  <input v-model="bookingForm.start_date" type="date" required style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
+                </div>
+                <div>
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Check-out Date</label>
+                  <input v-model="bookingForm.end_date" type="date" required style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
+                </div>
+              </div>
+
+              <!-- Nights Stayed -->
+              <div>
+                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Nights Stayed (Auto-calculated)</label>
+                <input :value="nightsCount + ' nights'" type="text" disabled style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; background-color: #f3f4f6; color: #374151; font-weight: 600; width: 100%;" />
+              </div>
+
+              <!-- Financial Info -->
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div>
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Total Gross Price (€)</label>
+                  <input v-model.number="bookingForm.price" type="number" step="0.01" required placeholder="0.00" style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
+                </div>
+                <div>
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Platform Service Fee (€)</label>
+                  <input v-model.number="bookingForm.platform_fee" type="number" step="0.01" placeholder="0.00" style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
+                </div>
+              </div>
+
+              <!-- Commission Rate -->
+              <div>
+                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Doorman Commission Rate (%)</label>
+                <input v-model.number="bookingForm.commission_rate" type="number" step="0.1" required style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
+              </div>
+
+              <!-- Live Payout Breakdown -->
+              <div style="background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #bae6fd; border-radius: 12px; padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem;">
+                <h3 style="font-size: 0.8rem; font-weight: 800; text-transform: uppercase; color: #0369a1; margin: 0; border-bottom: 1px solid #bae6fd; padding-bottom: 0.5rem; letter-spacing: 0.05em;">
+                  Live Payout Breakdown
+                </h3>
+
+                <div style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+                  <span style="color: #475569;">Nightly Rate (Avg):</span>
+                  <strong style="color: #0f172a;">€{{ payoutBreakdown.nightly }} / gece</strong>
+                </div>
+
+                <div style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+                  <span style="color: #475569;">Net Income (Gross − Fee):</span>
+                  <strong style="color: #0f172a;">€{{ payoutBreakdown.net }}</strong>
+                </div>
+
+                <div style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+                  <span style="color: #475569;">Owner Share:</span>
+                  <strong style="color: #64748b;">€{{ payoutBreakdown.owner }}</strong>
+                </div>
+
+                <div style="display: flex; justify-content: space-between; font-size: 1rem; border-top: 2px solid #7dd3fc; padding-top: 0.6rem;">
+                  <span style="color: #0f172a; font-weight: 700;">Doorman Payout ({{ bookingForm.commission_rate }}%):</span>
+                  <strong style="color: #0c4a6e; font-weight: 900; font-size: 1.1rem;">€{{ payoutBreakdown.doorman }}</strong>
+                </div>
+              </div>
+
+              <!-- Submit -->
+              <button type="submit" class="submit-btn" style="width: 100%; padding: 1rem; justify-content: center; font-weight: 700; font-size: 1rem; margin-top: 0.5rem;">
+                <span class="material-icons-outlined" style="margin-right: 0.5rem;">save</span>
+                Save Reservation
+              </button>
+
+            </form>
+          </section>
+        </div>
+
+        <!-- Main Dashboard: Timeline Scheduler Calendar -->
+        <div v-else-if="currentConciergeView === 'calendar'" class="concierge-dashboard">
+          <!-- Calendar Card -->
+          <section class="admin-section card" style="padding: 1.5rem;">
+            <div class="calendar-controls-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; flex-wrap: wrap; gap: 1rem;">
+              <div style="display: flex; align-items: center; gap: 0.75rem;">
+                <!-- Today Button -->
+                <button
+                  @click="scrollToToday"
+                  style="padding: 0.45rem 1rem; border: 1.5px solid var(--accent); background: var(--accent); color: var(--primary); border-radius: 6px; cursor: pointer; font-weight: 700; font-size: 0.85rem; display: flex; align-items: center; gap: 0.35rem; transition: opacity 0.15s;"
+                  @mouseenter="$event.target.style.opacity='0.85'"
+                  @mouseleave="$event.target.style.opacity='1'"
+                >
+                  <span class="material-icons-outlined" style="font-size: 1rem;">today</span>
+                  Today
+                </button>
+                <div class="calendar-nav" style="display: flex; align-items: center; gap: 0.75rem;">
+                <button @click="prevMonth" class="action-btn" style="padding: 0.5rem; border: 1px solid #eee; background: white; border-radius: 6px; cursor: pointer; display: flex; align-items: center;">
+                  <span class="material-icons-outlined">chevron_left</span>
+                </button>
+                
+                <!-- Month Dropdown -->
+                <select v-model="currentMonth" style="padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #eee; background: white; font-weight: 600; color: var(--primary); cursor: pointer; font-size: 0.9rem;">
+                  <option v-for="(mName, idx) in monthNames" :key="idx" :value="idx">{{ mName }}</option>
+                </select>
+
+                <!-- Year Dropdown -->
+                <select v-model="currentYear" style="padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #eee; background: white; font-weight: 600; color: var(--primary); cursor: pointer; font-size: 0.9rem;">
+                  <option v-for="y in [2024, 2025, 2026, 2027, 2028, 2029, 2030, 2031, 2032]" :key="y" :value="y">{{ y }}</option>
+                </select>
+
+                <button @click="nextMonth" class="action-btn" style="padding: 0.5rem; border: 1px solid #eee; background: white; border-radius: 6px; cursor: pointer; display: flex; align-items: center;">
+                  <span class="material-icons-outlined">chevron_right</span>
+                </button>
+              </div>
+              
+              <div style="font-size: 0.85rem; color: #6b7280; font-weight: 600;">
+                <span class="material-icons-outlined" style="font-size: 1rem; vertical-align: middle; margin-right: 0.25rem; color: var(--accent);">info</span>
+                Scroll horizontally to view all days of the month.
+                </div>
+              </div>
+            </div>
+
+            <!-- Timeline Scheduler Grid -->
+            <div class="timeline-container" style="overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 12px; background: white; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
+              <div class="timeline-grid" :style="{ minWidth: (220 + daysInActiveMonth.length * 45) + 'px' }">
+                
+                <!-- Header Row -->
+                <div class="timeline-row header-row" style="display: flex; border-bottom: 1px solid #e5e7eb; background: #f9fafb; min-height: 55px;">
+                  <div class="timeline-cell property-col header" style="width: 220px; min-width: 220px; padding: 1rem; font-weight: 700; color: var(--primary); position: sticky; left: 0; background: #f9fafb; border-right: 1px solid #e5e7eb; z-index: 12; display: flex; align-items: center;">
+                    Short-Term Properties
+                  </div>
+                  <div 
+                    v-for="day in daysInActiveMonth" 
+                    :key="day.getTime()" 
+                    class="timeline-cell day-col" 
+                    :class="{ 'is-weekend': day.getDay() === 0 || day.getDay() === 6 }"
+                    :data-date="day.toISOString().slice(0, 10)"
+                    style="width: 45px; min-width: 45px; text-align: center; padding: 0.75rem 0; border-right: 1px solid #e5e7eb; display: flex; flex-direction: column; align-items: center; justify-content: center;"
+                    :style="isToday(day) ? 'background-color: #eff6ff; font-weight: 800;' : ''"
+                  >
+                    <span 
+                      :style="isToday(day) ? 'background-color: var(--accent); color: var(--primary); border-radius: 50%; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; font-weight: 800; box-shadow: 0 2px 4px rgba(0,0,0,0.1);' : ''"
+                    >
+                      {{ day.getDate() }}
+                    </span>
+                    <span style="font-size: 0.55rem; font-weight: 500; text-transform: uppercase; color: #64748b; margin-top: 0.1rem;" :style="isToday(day) ? 'color: var(--accent); font-weight: 700;' : ''">
+                      {{ day.toLocaleDateString('en-US', { weekday: 'narrow' }) }}
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Property Rows -->
+                <div 
+                  v-for="prop in conciergeProperties" 
+                  :key="prop.id" 
+                  class="timeline-row property-row" 
+                  style="display: flex; border-bottom: 1px solid #e5e7eb; min-height: 85px;"
+                >
+                  <!-- Sticky left column with property details & management -->
+                  <div class="timeline-cell property-col" style="width: 220px; min-width: 220px; padding: 0.75rem 1rem; position: sticky; left: 0; background: white; border-right: 1px solid #e5e7eb; display: flex; flex-direction: column; justify-content: space-between; z-index: 10; box-shadow: 2px 0 5px rgba(0,0,0,0.02); transition: background-color 0.2s;">
+                    <div @click="openPropertyFullPage(prop)" style="margin-bottom: 0.25rem; cursor: pointer;">
+                      <strong style="color: var(--primary); font-size: 0.9rem; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" :title="prop.title">
+                        {{ prop.title }}
+                      </strong>
+                      <small class="text-muted" style="font-size: 0.75rem; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #6b7280;" :title="prop.address">
+                        {{ prop.address || 'No Address' }}
+                      </small>
+                    </div>
+                    
+                    <div style="display: flex; gap: 0.25rem; margin-top: auto;">
+
+                      <button @click="startEditConcierge(prop)" class="edit-btn" style="padding: 2px 6px; font-size: 0.7rem;">
+                        Edit
+                      </button>
+                      <button @click="deleteConciergeProperty(prop.id)" class="delete-btn" style="padding: 2px 6px; font-size: 0.7rem;">
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Day cells -->
+                  <div 
+                    v-for="day in daysInActiveMonth" 
+                    :key="day.getTime()" 
+                    @click="handleDayCellClick(prop, day)"
+                    class="timeline-cell day-col" 
+                    :class="{ 'is-weekend': day.getDay() === 0 || day.getDay() === 6 }"
+                    style="width: 45px; min-width: 45px; border-right: 1px solid #f3f4f6; position: relative; display: flex; align-items: center; justify-content: center; cursor: pointer;"
+                    :style="isToday(day) ? 'background-color: #eff6ff;' : 'background-color: white;'"
+                  >
+                    <!-- Booking pill bar overlay -->
+                    <div 
+                      v-for="state in getBookingsForDay(prop, day)"
+                      :key="state.booking.id"
+                      class="booking-pill-bar"
+                      :class="{
+                        'booking-start': state.isStart,
+                        'booking-end': state.isEnd
+                      }"
+                      :title="`${prop.title}: ${state.booking.summary}`"
+                      style="position: absolute; height: 36px; font-weight: 700; font-size: 0.65rem; display: flex; align-items: center; justify-content: flex-start; border-top: 1px solid rgba(255,255,255,0.2); border-bottom: 1px solid rgba(0,0,0,0.1); box-shadow: 0 1px 3px rgba(0,0,0,0.05);"
+                      :style="getBookingBarStyle(state.booking, state.isStart, state.isEnd, getBookingsForDay(prop, day))"
+                    >
+                      <!-- Display guest name / summary only on start or in center to avoid cluttering -->
+                      <span 
+                        v-if="state.isStart" 
+                        style="padding: 0 10px; pointer-events: none; font-size: 0.72rem; font-weight: 700; white-space: nowrap; position: absolute; left: 0; z-index: 4;"
+                      >
+                        {{ state.booking.summary }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-if="conciergeProperties.length === 0" style="padding: 3rem; text-align: center; color: #9ca3af; font-weight: 600;">
+                  No short-term properties added. Click "Add Short-Term Property" above to get started.
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- Reports Tracking View -->
+        <div v-else-if="currentConciergeView === 'reports-tracking'" class="concierge-dashboard">
+          <section class="admin-section card" style="padding: 1.5rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; border-bottom: 2px solid #f3f4f6; padding-bottom: 0.75rem;">
+              <div>
+                <h2 style="font-size: 1.25rem; color: var(--primary); font-weight: 700; margin: 0;">
+                  Property Owner Reports Tracking
+                </h2>
+                <small style="color: #6b7280; font-size: 0.8rem;">Monitor which monthly reports have been emailed to owners.</small>
+              </div>
+              <button 
+                @click="fetchConciergeReports"
+                style="padding: 0.5rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.8rem; background: white; color: #374151; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 0.35rem;"
+              >
+                <span class="material-icons-outlined" style="font-size: 0.95rem;">refresh</span>
+                Refresh Status
+              </button>
+            </div>
+
+            <!-- Filters & Page Size Controls -->
+            <div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; background: #f8fafc; padding: 1rem; border-radius: 8px;">
+              <!-- Search Input -->
+              <div style="flex: 1; min-width: 200px; display: flex; align-items: center; position: relative;">
+                <span class="material-icons-outlined" style="position: absolute; left: 0.75rem; color: #94a3b8; font-size: 1.2rem;">search</span>
+                <input 
+                  type="text" 
+                  v-model="reportsFilter.search" 
+                  placeholder="Search by property, owner name..."
+                  style="width: 100%; padding: 0.5rem 1rem 0.5rem 2.5rem; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 0.88rem; outline: none; background: white;"
+                />
+              </div>
+
+              <!-- Status Dropdown -->
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <label style="font-size: 0.85rem; font-weight: 600; color: #475569;">Status:</label>
+                <select 
+                  v-model="reportsFilter.status"
+                  style="padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #cbd5e1; background: white; font-size: 0.88rem; color: #334155; font-weight: 600; cursor: pointer;"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="sent">Sent</option>
+                  <option value="not_sent">Not Sent</option>
+                </select>
+              </div>
+
+              <!-- Page Size Dropdown -->
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <label style="font-size: 0.85rem; font-weight: 600; color: #475569;">Show:</label>
+                <select 
+                  v-model="reportsPerPage"
+                  style="padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #cbd5e1; background: white; font-size: 0.88rem; color: #334155; font-weight: 600; cursor: pointer;"
+                >
+                  <option :value="10">10 rows</option>
+                  <option :value="20">20 rows</option>
+                  <option :value="50">50 rows</option>
+                  <option :value="100">100 rows</option>
+                </select>
+              </div>
+            </div>
+
+            <div style="overflow-x: auto;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
+                <thead>
+                  <tr style="border-bottom: 2px solid #e5e7eb; background: #f9fafb; text-align: left; color: #4b5563; font-weight: 700;">
+                    <th style="padding: 0.75rem 1rem;">Property</th>
+                    <th style="padding: 0.75rem 1rem;">Owner Name</th>
+                    <th style="padding: 0.75rem 1rem;">Report Period</th>
+                    <th style="padding: 0.75rem 1rem; text-align: center;">Status</th>
+                    <th style="padding: 0.75rem 1rem; text-align: center;">Last Emailed</th>
+                    <th style="padding: 0.75rem 1rem; text-align: right;">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr 
+                    v-for="row in paginatedReportTrackingRows" 
+                    :key="row.id"
+                    style="border-bottom: 1px solid #f3f4f6; transition: background 0.15s;"
+                    @mouseenter="$event.currentTarget.style.background='#f9fafb'"
+                    @mouseleave="$event.currentTarget.style.background=''"
+                  >
+                    <!-- Property Name -->
+                    <td style="padding: 0.75rem 1rem; font-weight: 600; color: var(--primary);">
+                      {{ row.propertyTitle }}
+                    </td>
+                    <!-- Owner Name -->
+                    <td style="padding: 0.75rem 1rem; color: #374151;">
+                      <div>{{ row.ownerName }}</div>
+                      <small style="color: #6b7280; font-size: 0.75rem;">{{ row.ownerEmail }}</small>
+                    </td>
+                    <!-- Month & Year -->
+                    <td style="padding: 0.75rem 1rem; font-weight: 600; color: #4b5563;">
+                      {{ row.monthName }} {{ row.year }}
+                    </td>
+                    <!-- Status -->
+                    <td style="padding: 0.75rem 1rem; text-align: center;">
+                      <span 
+                        v-if="row.status === 'sent'"
+                        style="display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.6rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700; background: #d1fae5; color: #065f46;"
+                      >
+                        <span class="material-icons-outlined" style="font-size: 0.85rem;">check_circle</span>
+                        Sent
+                      </span>
+                      <span 
+                        v-else
+                        style="display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.6rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700; background: #fef3c7; color: #92400e;"
+                      >
+                        <span class="material-icons-outlined" style="font-size: 0.85rem;">pending</span>
+                        Not Sent
+                      </span>
+                    </td>
+                    <!-- Last Sent Date -->
+                    <td style="padding: 0.75rem 1rem; text-align: center; color: #6b7280;">
+                      {{ row.lastSentAt ? formatDateToEU(row.lastSentAt.slice(0,10)) + ' ' + row.lastSentAt.slice(11,16) : '—' }}
+                    </td>
+                    <!-- Action -->
+                    <td style="padding: 0.75rem 1rem; text-align: right;">
+                      <button 
+                        @click="sendTrackingReportEmail(row)"
+                        :disabled="isSendingEmail"
+                        style="padding: 0.4rem 0.8rem; border-radius: 6px; border: 1.5px solid #2563eb; background: #2563eb; color: white; font-size: 0.78rem; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 0.3rem;"
+                      >
+                        <span class="material-icons-outlined" style="font-size: 0.85rem;">mail</span>
+                        Send Email
+                      </button>
+                    </td>
+                  </tr>
+                  <tr v-if="filteredReportTrackingRows.length === 0">
+                    <td colspan="6" style="padding: 3rem; text-align: center; color: #9ca3af; font-weight: 600;">
+                      No booking records match the filters.
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- Pagination Controls -->
+            <div 
+              v-if="reportsTotalPages > 1"
+              style="display: flex; justify-content: space-between; align-items: center; margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #e2e8f0; flex-wrap: wrap; gap: 1rem;"
+            >
+              <div style="font-size: 0.85rem; color: #64748b;">
+                Showing page {{ reportsCurrentPage }} of {{ reportsTotalPages }} ({{ filteredReportTrackingRows.length }} total rows)
+              </div>
+              <div style="display: flex; gap: 0.35rem; align-items: center;">
+                <button 
+                  @click="reportsCurrentPage = Math.max(1, reportsCurrentPage - 1)" 
+                  :disabled="reportsCurrentPage === 1"
+                  style="padding: 0.4rem 0.8rem; border-radius: 6px; border: 1px solid #e2e8f0; background: white; cursor: pointer; display: flex; align-items: center; gap: 0.25rem;"
+                  :style="reportsCurrentPage === 1 ? 'opacity:0.5; cursor:not-allowed;' : ''"
+                >
+                  <span class="material-icons-outlined" style="font-size: 1rem;">chevron_left</span>
+                  Prev
+                </button>
+
+                <button 
+                  v-for="p in reportsTotalPages" 
+                  :key="p"
+                  @click="reportsCurrentPage = p"
+                  style="padding: 0.4rem 0.8rem; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.85rem;"
+                  :style="p === reportsCurrentPage ? 'background: #2563eb; color: white; border: 1px solid #2563eb;' : 'background: white; color: #475569; border: 1px solid #e2e8f0;'"
+                >
+                  {{ p }}
+                </button>
+
+                <button 
+                  @click="reportsCurrentPage = Math.min(reportsTotalPages, reportsCurrentPage + 1)" 
+                  :disabled="reportsCurrentPage === reportsTotalPages"
+                  style="padding: 0.4rem 0.8rem; border-radius: 6px; border: 1px solid #e2e8f0; background: white; cursor: pointer; display: flex; align-items: center; gap: 0.25rem;"
+                  :style="reportsCurrentPage === reportsTotalPages ? 'opacity:0.5; cursor:not-allowed;' : ''"
+                >
+                  Next
+                  <span class="material-icons-outlined" style="font-size: 1rem;">chevron_right</span>
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- Full-Page Property Details Dashboard (commission split calculations) -->
+        <div v-else-if="currentConciergeView === 'property-details'" class="property-details-dashboard">
+          <div style="display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 2rem; margin-top: 1.5rem; align-items: start;">
+            
+            <!-- Left: List of Reservations/Bookings -->
+            <div class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; border-bottom: 2px solid #f3f4f6; padding-bottom: 0.5rem;">
+                <h2 style="font-size: 1.2rem; color: var(--primary); font-weight: 700; margin: 0;">
+                  All Bookings & Financial Records
+                </h2>
+                <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                  <!-- Period select dropdown -->
+                  <div style="display: flex; align-items: center; gap: 0.35rem; border: 1px solid #e5e7eb; padding: 0.35rem 0.6rem; border-radius: 6px; background: #f9fafb;">
+                    <span style="font-size: 0.75rem; font-weight: 700; color: #4b5563; white-space: nowrap;">Period:</span>
+                    <select v-model="emailReportPeriod.type" style="padding: 0.2rem 0.4rem; border-radius: 4px; border: 1px solid #ddd; background: white; font-size: 0.78rem; font-weight: 600; cursor: pointer; color: #374151;">
+                      <option value="selected">Current Month</option>
+                      <option value="custom">Custom Month</option>
+                      <option value="all">All Time</option>
+                    </select>
+                    
+                    <template v-if="emailReportPeriod.type === 'custom'">
+                      <select v-model="emailReportPeriod.month" style="padding: 0.2rem 0.4rem; border-radius: 4px; border: 1px solid #ddd; background: white; font-size: 0.78rem; font-weight: 600; cursor: pointer; color: #374151;">
+                        <option v-for="(mName, idx) in monthNames" :key="idx" :value="idx">{{ mName }}</option>
+                      </select>
+                      <select v-model="emailReportPeriod.year" style="padding: 0.2rem 0.4rem; border-radius: 4px; border: 1px solid #ddd; background: white; font-size: 0.78rem; font-weight: 600; cursor: pointer; color: #374151;">
+                        <option v-for="y in [2024, 2025, 2026, 2027, 2028, 2029, 2030, 2031, 2032]" :key="y" :value="y">{{ y }}</option>
+                      </select>
+                    </template>
+                  </div>
+
+                  <button
+                    @click="sendOwnerReportEmail"
+                    :disabled="isSendingEmail"
+                    style="padding: 0.45rem 1rem; border: 1.5px solid #2563eb; border-radius: 6px; font-size: 0.8rem; background: #2563eb; color: white; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 0.35rem; font-weight: 700;"
+                  >
+                    <span class="material-icons-outlined" style="font-size: 0.95rem;">mail</span>
+                    {{ isSendingEmail ? 'Sending...' : 'Email to Owner' }}
+                  </button>
+                  <button
+                    @click="exportReservationsToExcel(selectedConciergeDetailsProperty.bookings, selectedConciergeDetailsProperty.title)"
+                    style="padding: 0.45rem 1rem; border: 1.5px solid #107c41; border-radius: 6px; font-size: 0.8rem; background: #107c41; color: white; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 0.35rem; font-weight: 700;"
+                  >
+                    <span class="material-icons-outlined" style="font-size: 0.95rem;">download_for_offline</span>
+                    Export Excel
+                  </button>
+                </div>
+              </div>
+              
+              <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                  <thead>
+                    <tr style="border-bottom: 2px solid #f3f4f6; text-align: left; background-color: #f9fafb; color: #4b5563; font-weight: 700;">
+                      <th style="padding: 10px;">Guest / Source</th>
+                      <th style="padding: 10px;">Dates (Nights)</th>
+                      <th style="padding: 10px;">Revenue Split</th>
+                      <th style="padding: 10px; text-align: right;">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="b in selectedConciergeDetailsProperty.bookings" :key="b.id" style="border-bottom: 1px solid #f3f4f6; transition: background 0.2s; cursor: pointer;" @click="selectBookingForEdit(b)" class="hover-row">
+                      <td style="padding: 10px;">
+                        <strong style="color: var(--primary); font-size: 0.9rem;">{{ b.guest_name || b.summary }}</strong>
+                        <div style="margin-top: 0.2rem;">
+                          <span class="status-pill" :style="{
+                            backgroundColor: b.source === 'airbnb' ? '#fee2e2' : b.source === 'booking' ? '#dbeafe' : '#ffedd5',
+                            color: b.source === 'airbnb' ? '#991b1b' : b.source === 'booking' ? '#1e40af' : '#9a3412',
+                            fontSize: '0.7rem',
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            fontWeight: '700'
+                          }">
+                            {{ b.source === 'airbnb' ? 'Airbnb' : b.source === 'booking' ? 'Booking.com' : 'Resaoff' }}
+                          </span>
+                        </div>
+                      </td>
+                      <td style="padding: 10px;">
+                        <span style="font-weight: 600; color: #374151;">{{ formatDateToEU(b.start_date) }} - {{ formatDateToEU(b.end_date) }}</span>
+                        <div style="font-size: 0.75rem; color: #6b7280; margin-top: 0.1rem;">
+                          {{ b.nights || 1 }} nights
+                        </div>
+                      </td>
+                      <td style="padding: 10px;">
+                        <div style="font-weight: 700; color: #16a34a;">Total: €{{ b.price || 0 }}</div>
+                        <div style="font-size: 0.75rem; color: #4b5563; margin-top: 0.15rem; display: flex; flex-direction: column; gap: 0.1rem;">
+                          <span>Owner: €{{ b.owner_payout || 0 }}</span>
+                          <span>Doorman ({{ b.commission_rate || 20 }}%): €{{ b.doorman_commission || 0 }}</span>
+                        </div>
+                      </td>
+                      <td style="padding: 10px; text-align: right;" @click.stop>
+                        <button @click="deleteConciergeBookingInDetails(b.id)" class="delete-btn" style="padding: 4px 8px; font-size: 0.75rem; border-radius: 4px; display: inline-flex; align-items: center; gap: 0.25rem;">
+                          <span class="material-icons-outlined" style="font-size: 0.85rem;">delete</span>
+                          Cancel
+                        </button>
+                      </td>
+                    </tr>
+                    <tr v-if="!selectedConciergeDetailsProperty.bookings || selectedConciergeDetailsProperty.bookings.length === 0">
+                      <td colspan="4" style="text-align: center; padding: 2rem; color: #9ca3af; font-weight: 600;">No bookings found.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Right: Create/Edit Financial Form -->
+            <div class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; border-bottom: 2px solid #f3f4f6; padding-bottom: 0.5rem;">
+                <h2 style="font-size: 1.2rem; color: var(--primary); font-weight: 700; margin: 0;">
+                  {{ bookingForm.id ? 'Edit Reservation' : 'New Reservation' }}
+                </h2>
+                <button v-if="bookingForm.id" @click="resetBookingForm" class="edit-btn" style="padding: 2px 8px; font-size: 0.75rem;">
+                  Clear Form
+                </button>
+              </div>
+
+              <form @submit.prevent="saveAdvancedBooking" style="display: flex; flex-direction: column; gap: 1.25rem;">
+                <!-- Platform Select -->
+                <div class="filter-group">
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Platform / Source</label>
+                  <select v-model="bookingForm.platform" required style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background: white; width: 100%;">
+                    <option value="airbnb">Airbnb</option>
+                    <option value="booking">Booking.com</option>
+                    <option value="resaoff">Resaoff (Offline Direct)</option>
+                  </select>
+                </div>
+
+                <!-- Guest Name -->
+                <div class="filter-group">
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Guest Name (First & Last)</label>
+                  <input v-model="bookingForm.guest_name" type="text" required placeholder="e.g. John Doe" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                </div>
+
+                <!-- Date grid -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                  <div class="filter-group">
+                    <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Check-in Date</label>
+                    <input v-model="bookingForm.start_date" type="date" required style="padding: 0.6rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                  </div>
+                  <div class="filter-group">
+                    <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Check-out Date</label>
+                    <input v-model="bookingForm.end_date" type="date" required style="padding: 0.6rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                  </div>
+                </div>
+
+                <!-- Nights (Auto-calculated) -->
+                <div class="filter-group">
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Nights Stayed (Auto-calculated)</label>
+                  <input :value="nightsCount" type="text" disabled style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background-color: #f3f4f6; color: #4b5563; font-weight: 600; width: 100%;" />
+                </div>
+
+                <!-- Financial Inputs Grid -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                  <div class="filter-group">
+                    <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Total Gross Price (€)</label>
+                    <input v-model.number="bookingForm.price" type="number" step="0.01" required style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                  </div>
+                  <div class="filter-group">
+                    <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Platform Service Fee (€)</label>
+                    <input v-model.number="bookingForm.platform_fee" type="number" step="0.01" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                  </div>
+                </div>
+
+                <!-- Commission Rate -->
+                <div class="filter-group">
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Doorman Commission Rate (%)</label>
+                  <input v-model.number="bookingForm.commission_rate" type="number" step="0.1" required style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                </div>
+
+                <!-- Live calculations / Split Breakdown panel -->
+                <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.75rem;">
+                  <h3 style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; color: #64748b; margin: 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.25rem;">
+                    Dynamic Payout Split
+                  </h3>
+
+                  <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
+                    <span style="color: #475569;">Nightly Rate (Avg):</span>
+                    <strong style="color: #0f172a;">€{{ payoutBreakdown.nightly }} / gece</strong>
+                  </div>
+                  
+                  <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
+                    <span style="color: #475569;">Net Income (Gross - Fee):</span>
+                    <strong style="color: #0f172a;">€{{ payoutBreakdown.net }}</strong>
+                  </div>
+
+                  <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
+                    <span style="color: #475569;">Owner Share:</span>
+                    <strong style="color: #475569;">€{{ payoutBreakdown.owner }}</strong>
+                  </div>
+
+                  <div style="display: flex; justify-content: space-between; font-size: 0.9rem; border-top: 1px dashed #cbd5e1; padding-top: 0.5rem;">
+                    <span style="color: #0f172a; font-weight: 700;">Doorman Payout ({{ bookingForm.commission_rate }}%):</span>
+                    <strong style="color: #0f172a; font-weight: 800; font-size: 1rem;">€{{ payoutBreakdown.doorman }}</strong>
+                  </div>
+                </div>
+
+                <!-- Submit Action -->
+                <button type="submit" class="submit-btn" style="width: 100%; padding: 0.8rem; justify-content: center; font-weight: 700; margin-top: 0.5rem;">
+                  <span class="material-icons-outlined" style="margin-right: 0.5rem;">save</span>
+                  {{ bookingForm.id ? 'Update Reservation' : 'Save Reservation' }}
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+    </main>
   </div>
+
+  <!-- 1. Property Details Modal -->
+  <transition name="fade">
+    <div v-if="showConciergeDetailsModal && selectedConciergeDetailsProperty" class="modal-overlay" @click.self="showConciergeDetailsModal = false">
+      <div class="filter-modal" style="max-width: 600px;">
+        <div class="modal-header">
+          <h3>{{ selectedConciergeDetailsProperty.title }} Details</h3>
+          <button @click="showConciergeDetailsModal = false" class="close-btn">&times;</button>
+        </div>
+        <div class="filter-modal-body" style="padding: 1.5rem;">
+          <div style="margin-bottom: 1.5rem;">
+            <p><strong>Address:</strong> {{ selectedConciergeDetailsProperty.address || 'No Address' }}</p>
+
+          </div>
+
+          <!-- List Bookings -->
+          <div style="margin-bottom: 1.5rem;">
+            <h4 style="color: var(--primary); margin-bottom: 0.75rem; border-bottom: 1px solid #eee; padding-bottom: 0.25rem;">Active Bookings</h4>
+            <div style="max-height: 250px; overflow-y: auto;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                <thead>
+                  <tr style="border-bottom: 2px solid #eee; text-align: left; background-color: #f9fafb;">
+                    <th style="padding: 6px;">Guest / Source</th>
+                    <th style="padding: 6px;">Dates</th>
+                    <th style="padding: 6px;">Price</th>
+                    <th style="padding: 6px; text-align: right;">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="b in selectedConciergeDetailsProperty.bookings" :key="b.id" style="border-bottom: 1px solid #eee;">
+                    <td style="padding: 6px;">
+                      <strong>{{ b.guest_name || b.summary }}</strong>
+                      <div style="font-size: 0.75rem; color: #6b7280;">
+                        {{ b.is_manual ? 'Direct Reservation' : 'Synced from iCal' }}
+                      </div>
+                    </td>
+                    <td style="padding: 6px;">
+                      {{ formatDateToEU(b.start_date) }} - {{ formatDateToEU(b.end_date) }}
+                    </td>
+                    <td style="padding: 6px;">
+                      {{ b.price ? '€' + b.price : 'N/A' }}
+                    </td>
+                    <td style="padding: 6px; text-align: right;">
+                      <button v-if="b.is_manual" @click="deleteManualBooking(b.id)" class="delete-btn" style="padding: 2px 6px; font-size: 0.75rem;">
+                        Cancel
+                      </button>
+                      <span v-else style="font-size: 0.75rem; color: #9ca3af;">iCal</span>
+                    </td>
+                  </tr>
+                  <tr v-if="!selectedConciergeDetailsProperty.bookings || selectedConciergeDetailsProperty.bookings.length === 0">
+                    <td colspan="4" style="text-align: center; padding: 12px; color: #9ca3af;">No bookings found.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Quick Add Reservation Button -->
+          <button @click="openBookingModal(selectedConciergeDetailsProperty)" class="action-header-btn" style="width: 100%; justify-content: center; padding: 0.75rem;">
+            <span class="material-icons-outlined">add</span>
+            Add Direct Reservation
+          </button>
+        </div>
+        <div class="modal-footer">
+          <button @click="showConciergeDetailsModal = false" class="reset-btn" style="width: 100%;">Close</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <!-- 2. Booking Creation Modal -->
+  <transition name="fade">
+    <div v-if="showBookingModal && selectedBookingProperty" class="modal-overlay" @click.self="showBookingModal = false">
+      <div class="filter-modal" style="max-width: 450px;">
+        <div class="modal-header">
+          <h3>Add Reservation</h3>
+          <button @click="showBookingModal = false" class="close-btn">&times;</button>
+        </div>
+        <form @submit.prevent="addManualBooking">
+          <div class="filter-modal-body">
+            <div class="filter-group">
+              <label>Property</label>
+              <input type="text" :value="selectedBookingProperty.title" disabled style="padding: 0.6rem 1rem; border: 1px solid #eee; border-radius: 8px; font-size: 0.9rem; background-color: #f3f4f6; color: #4b5563;" />
+            </div>
+            <div class="filter-group">
+              <label>Guest Name</label>
+              <input v-model="newBooking.guest_name" type="text" required placeholder="e.g. John Doe" style="padding: 0.6rem 1rem; border: 1px solid #eee; border-radius: 8px; font-size: 0.9rem;" />
+            </div>
+            <div class="filter-group">
+              <label>Price (€)</label>
+              <input v-model.number="newBooking.price" type="number" step="0.01" placeholder="e.g. 150.00" style="padding: 0.6rem 1rem; border: 1px solid #eee; border-radius: 8px; font-size: 0.9rem;" />
+            </div>
+            <div class="range-inputs">
+              <div class="filter-group">
+                <label>Check-in Date</label>
+                <input v-model="newBooking.start_date" type="date" required style="padding: 0.6rem; border: 1px solid #eee; border-radius: 8px; font-size: 0.9rem;" />
+              </div>
+              <div class="filter-group">
+                <label>Check-out Date</label>
+                <input v-model="newBooking.end_date" type="date" required style="padding: 0.6rem; border: 1px solid #eee; border-radius: 8px; font-size: 0.9rem;" />
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" @click="showBookingModal = false" class="reset-btn">Cancel</button>
+            <button type="submit" class="apply-btn">Save Reservation</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </transition>
+
+  <!-- 3. Booking Details Modal -->
+  <transition name="fade">
+    <div v-if="showBookingDetailsModal && selectedBookingDetail" class="modal-overlay" @click.self="showBookingDetailsModal = false">
+      <div class="filter-modal" style="max-width: 450px;">
+        <div class="modal-header">
+          <h3>Reservation Details</h3>
+          <button @click="showBookingDetailsModal = false" class="close-btn">&times;</button>
+        </div>
+        <form @submit.prevent="updateBookingDetails">
+          <div class="filter-modal-body" style="padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem;">
+            <div>
+              <small style="text-transform: uppercase; font-size: 0.7rem; font-weight: 700; color: #9ca3af; display: block; margin-bottom: 0.25rem;">Property</small>
+              <strong style="color: var(--primary); font-size: 1rem;">{{ selectedBookingProperty ? selectedBookingProperty.title : 'N/A' }}</strong>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; border-top: 1px solid #f3f4f6; border-bottom: 1px solid #f3f4f6; padding: 0.75rem 0;">
+              <div>
+                <small style="text-transform: uppercase; font-size: 0.7rem; font-weight: 700; color: #9ca3af; display: block; margin-bottom: 0.15rem;">Check-in</small>
+                <span style="font-weight: 600; color: #374151; font-size: 0.9rem;">{{ formatDateToEU(selectedBookingDetail.start_date) }}</span>
+              </div>
+              <div>
+                <small style="text-transform: uppercase; font-size: 0.7rem; font-weight: 700; color: #9ca3af; display: block; margin-bottom: 0.15rem;">Check-out</small>
+                <span style="font-weight: 600; color: #374151; font-size: 0.9rem;">{{ formatDateToEU(selectedBookingDetail.end_date) }}</span>
+              </div>
+            </div>
+            
+            <div class="filter-group">
+              <label>Guest Name / Reservation Info</label>
+              <input v-model="selectedBookingDetail.guest_name" type="text" placeholder="e.g. Mehmet Gümüş" style="padding: 0.6rem 1rem; border: 1px solid #eee; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+              <span v-if="!selectedBookingDetail.is_manual && !selectedBookingDetail.guest_name" style="font-size: 0.75rem; color: #9ca3af; margin-top: 0.25rem; display: block;">
+                Original iCal Summary: {{ selectedBookingDetail.summary }}
+              </span>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 1rem; align-items: start;">
+              <div class="filter-group">
+                <label>Price (€)</label>
+                <input v-model.number="selectedBookingDetail.price" type="number" step="0.01" placeholder="e.g. 120.00" style="padding: 0.6rem 1rem; border: 1px solid #eee; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+              </div>
+              <div>
+                <small style="text-transform: uppercase; font-size: 0.7rem; font-weight: 700; color: #9ca3af; display: block; margin-bottom: 0.5rem;">Source</small>
+                <span v-if="selectedBookingDetail.is_manual" class="status-pill active" style="background-color: #dcfce7; color: #166534; font-size: 0.75rem; font-weight: 700;">
+                  Direct Booking
+                </span>
+                <span v-else class="status-pill active" style="background-color: #dbeafe; color: #1e40af; font-size: 0.75rem; font-weight: 700;">
+                  Airbnb iCal
+                </span>
+              </div>
+            </div>
+            
+            <div v-if="selectedBookingDetail.is_manual" style="margin-top: 0.5rem; border-top: 1px solid #f3f4f6; padding-top: 1rem;">
+              <button type="button" @click="deleteManualBooking(selectedBookingDetail.id)" class="delete-btn" style="width: 100%; padding: 0.7rem; justify-content: center; display: flex; align-items: center; gap: 0.5rem;">
+                <span class="material-icons-outlined">delete</span>
+                Cancel Reservation
+              </button>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" @click="showBookingDetailsModal = false" class="reset-btn">Close</button>
+            <button type="submit" class="apply-btn">Save Changes</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </transition>
+
+
 </template>
 
 <style scoped>
 .admin-view {
-  background-color: var(--background-light);
+  display: flex;
+  background-color: var(--primary);
   min-height: 100vh;
 }
 
-.admin-container {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 4rem 1rem;
+/* Sidebar Styling */
+.admin-sidebar {
+  width: 70px;
+  height: 100vh;
+  background-color: var(--primary);
+  color: white;
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 100;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+  box-shadow: 4px 0 10px rgba(0, 0, 0, 0.05);
 }
 
-.admin-header {
+.admin-sidebar:hover {
+  width: 280px;
+}
+
+/* Sidebar Branding (Logo and title) */
+.sidebar-branding {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 3rem;
-  padding-bottom: 1.5rem;
-  border-bottom: 1px solid var(--border-light);
+  padding: 1rem 0.65rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  height: 80px;
+  overflow: hidden;
+}
+
+.logo-wrapper {
+  width: 45px;
+  min-width: 45px;
+  height: 45px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: white;
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.sidebar-logo-img {
   width: 100%;
-  height: 5rem;
-}
-
-.header-branding {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-}
-
-.admin-logo-img {
-  height: 140px;
-  width: auto;
+  height: 100%;
   object-fit: contain;
-  background: transparent;
-  mix-blend-mode: multiply; /* Helps blend if white bg, otherwise use transparent png/webp */
 }
 
-.admin-title {
-  color: var(--primary);
+.sidebar-title {
   font-family: var(--font-display);
-  font-size: 1.75rem;
+  font-size: 1.15rem;
   font-weight: 700;
-  margin: 0;
-  margin-top: 2rem; /* Moving text slightly upwards to align better with logo text */
-  letter-spacing: -0.01em;
+  color: var(--accent);
+  margin-left: 1rem;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.2s ease;
 }
 
-.header-actions {
+.admin-sidebar:hover .sidebar-title {
+  opacity: 1;
+}
+
+/* Navigation tabs */
+.sidebar-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1.5rem 0.65rem;
+  flex: 1;
+}
+
+.sidebar-tab-btn {
+  background: none;
+  border: none;
   display: flex;
   align-items: center;
+  padding: 0.85rem 0.85rem;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: all 0.2s ease;
+  position: relative;
+  text-decoration: none;
+}
+
+.sidebar-tab-btn:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: white;
+}
+
+.sidebar-tab-btn.active {
+  background-color: var(--accent);
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.sidebar-tab-btn .material-icons-outlined {
+  font-size: 1.5rem;
+  min-width: 1.5rem;
+  margin-right: 1.25rem;
+}
+
+.tab-label {
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.admin-sidebar:hover .tab-label {
+  opacity: 1;
+}
+
+/* Badges */
+.icon-badge-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.unread-badge-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  background-color: #ef4444;
+  border-radius: 50%;
+  border: 1.5px solid var(--primary);
+}
+
+.sidebar-tab-btn.active .unread-badge-dot {
+  border-color: var(--accent);
+}
+
+.unread-badge-text {
+  background-color: #ef4444;
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 99px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.admin-sidebar:hover .unread-badge-text {
+  opacity: 1;
+}
+
+/* Sidebar Footer (User details and logout) */
+.sidebar-footer {
+  padding: 1rem 0.65rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
   gap: 1rem;
+  background-color: rgba(0, 0, 0, 0.15);
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem;
+  overflow: hidden;
+}
+
+.user-avatar {
+  font-size: 2.25rem !important;
+  color: rgba(255, 255, 255, 0.8);
+  margin-right: 0.75rem;
+  min-width: 2.25rem;
+}
+
+.user-meta {
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  overflow: hidden;
+}
+
+.admin-sidebar:hover .user-meta {
+  opacity: 1;
+}
+
+.user-email {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: white;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  max-width: 170px;
 }
 
 .role-badge {
   font-size: 0.65rem;
   font-weight: 800;
   text-transform: uppercase;
-  padding: 0.25rem 0.6rem;
+  padding: 0.15rem 0.5rem;
   border-radius: 99px;
   letter-spacing: 0.05em;
+  width: fit-content;
+  margin-top: 0.25rem;
 }
 
 .role-badge.superuser {
@@ -3321,6 +6236,50 @@ onMounted(async () => {
 .role-badge.editor {
   background: #fef9c3;
   color: #854d0e;
+}
+
+.sidebar-logout-btn {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  display: flex;
+  align-items: center;
+  padding: 0.75rem 0.85rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  width: 100%;
+}
+
+.sidebar-logout-btn:hover {
+  background-color: rgba(239, 68, 68, 0.3);
+  color: white;
+}
+
+.sidebar-logout-btn .material-icons-outlined {
+  font-size: 1.25rem;
+  min-width: 1.25rem;
+  margin-right: 1.5rem;
+}
+
+/* Main Content Area */
+.admin-main-content {
+  flex: 1;
+  margin-left: 70px;
+  background-color: var(--background-light);
+  border-top-left-radius: 20px;
+  border-bottom-left-radius: 20px;
+  min-height: 100vh;
+  min-width: 0;
+  transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: -5px 0 15px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.admin-content-wrap {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 3rem 2rem;
 }
 
 .quill-wrapper {
@@ -3342,51 +6301,6 @@ onMounted(async () => {
 :deep(.ql-container) {
   border-bottom-left-radius: 4px;
   border-bottom-right-radius: 4px;
-}
-
-.unread-badge {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  background-color: #ef4444;
-  color: white;
-  font-size: 0.65rem;
-  font-weight: bold;
-  padding: 2px 6px;
-  border-radius: 99px;
-  z-index: 10;
-}
-
-.logout-btn {
-  background: none;
-  border: 1px solid var(--primary);
-  padding: 0.5rem 1rem;
-  font-size: 0.75rem;
-  font-weight: 700;
-  cursor: pointer;
-  text-transform: uppercase;
-}
-
-.admin-tabs {
-  display: flex;
-  gap: 1rem;
-  margin-bottom: 2rem;
-}
-
-.admin-tabs button {
-  background: none;
-  border: none;
-  padding: 0.75rem 1.5rem;
-  font-weight: 700;
-  color: #6b7280;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: all 0.2s;
-}
-
-.admin-tabs button.active {
-  color: var(--primary);
-  border-bottom-color: var(--accent);
 }
 
 .card {
@@ -3969,5 +6883,96 @@ onMounted(async () => {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+/* Tab headers & Actions styling */
+.tab-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.tab-title {
+  color: var(--primary);
+  font-family: var(--font-display);
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.action-header-btn {
+  background-color: var(--accent);
+  color: var(--primary);
+  border: none;
+  padding: 0.65rem 1.25rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.action-header-btn:hover {
+  background-color: var(--primary);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.action-header-btn.secondary-btn {
+  background-color: #f3f4f6;
+  color: #4b5b60;
+  border: 1px solid #e5e7eb;
+}
+
+.action-header-btn.secondary-btn:hover {
+  background-color: #e5e7eb;
+  color: var(--primary);
+}
+
+/* Concierge Calendar Styling */
+.timeline-container::-webkit-scrollbar {
+  height: 8px;
+}
+
+.timeline-container::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+.timeline-container::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.timeline-container::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.timeline-cell.day-col.is-weekend {
+  background-color: #f9fafb !important;
+}
+
+.property-row:hover {
+  background-color: #f9fafb;
+}
+
+.property-row:hover .property-col {
+  background-color: #f9fafb !important;
+}
+
+.booking-pill-bar {
+  transition: all 0.2s ease;
+}
+
+.booking-pill-bar:hover {
+  filter: brightness(0.9);
+  transform: scaleY(1.05);
 }
 </style>
