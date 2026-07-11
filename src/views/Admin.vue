@@ -161,9 +161,14 @@ const addCleanerTransaction = async () => {
         description: ""
       };
       await fetchCleanerTransactions();
+      showTransactionsManager.value = false;
+    } else {
+      const errData = await res.json().catch(() => ({}));
+      alert(`Failed to add transaction: ${errData.detail || res.statusText}`);
     }
   } catch (err) {
     console.error("Failed to add transaction", err);
+    alert("Failed to add transaction.");
   }
 };
 
@@ -263,6 +268,42 @@ const filteredCleaningAssignmentsList = computed(() => {
     return `${y}-${m}-${day}`;
   };
 
+  const assignmentExpenseMap = new Map();
+  const assignmentKey = (a) => `${a.cleaner_id}|${a.property_id}|${getYYYYMMDD(a.cleaning_date)}`;
+  const monthlyKey = (a) => `${a.cleaner_id}|${a.property_id}`;
+  const exactAssignmentKeys = new Set(assignments.map(assignmentKey));
+  const firstMonthlyAssignment = new Map();
+
+  assignments.forEach((a) => {
+    const key = monthlyKey(a);
+    if (!firstMonthlyAssignment.has(key)) {
+      firstMonthlyAssignment.set(key, assignmentKey(a));
+    }
+  });
+
+  cleanerTransactions.value
+    .filter((t) => {
+      const d = new Date(t.transaction_date);
+      const matchesSelectedCleaner = !selectedCleanerId || t.cleaner_id === parseInt(selectedCleanerId);
+      return (
+        t.type === "expense" &&
+        t.property_id &&
+        d.getFullYear() === year &&
+        d.getMonth() + 1 === month &&
+        matchesSelectedCleaner
+      );
+    })
+    .forEach((t) => {
+      const exactKey = `${t.cleaner_id}|${t.property_id}|${getYYYYMMDD(t.transaction_date)}`;
+      const fallbackKey = firstMonthlyAssignment.get(`${t.cleaner_id}|${t.property_id}`);
+      const key = exactAssignmentKeys.has(exactKey) ? exactKey : fallbackKey;
+      if (!key) return;
+      assignmentExpenseMap.set(
+        key,
+        (assignmentExpenseMap.get(key) || 0) + parseFloat(t.amount || 0),
+      );
+    });
+
   return assignments.map(a => {
     const cleaner = cleaners.value.find(c => c.id === a.cleaner_id);
     const prop = conciergeProperties.value.find(p => p.id === a.property_id);
@@ -281,14 +322,7 @@ const filteredCleaningAssignmentsList = computed(() => {
       ? parseFloat(a.airbnb_cleaning_fee) 
       : parseFloat(prop?.airbnb_cleaning_fee || 0);
 
-    const aDate = getYYYYMMDD(a.cleaning_date);
-    const assignment_expenses = cleanerTransactions.value.filter(t => {
-      return t.type === 'expense' && 
-             t.cleaner_id === a.cleaner_id && 
-             t.property_id === a.property_id && 
-             getYYYYMMDD(t.transaction_date) === aDate;
-    });
-    const expenses_sum = assignment_expenses.reduce((sum, t) => sum + parseFloat(t.amount || 0), 0);
+    const expenses_sum = assignmentExpenseMap.get(assignmentKey(a)) || 0;
     const total_cost = wage + expenses_sum;
 
     return {
@@ -6293,7 +6327,9 @@ watch(cleaningSelectedDate, () => {
                           <td style="padding: 0.85rem 1rem; text-align: center; color: #2563eb;">
                             €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.expenses_sum, 0).toFixed(2) }}
                           </td>
-                          <td></td>
+                          <td style="padding: 0.85rem 1rem; text-align: center; color: #0284c7;">
+                            €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.airbnb_fee, 0).toFixed(2) }}
+                          </td>
                           <td style="padding: 0.85rem 1rem; text-align: right; color: #059669; font-size: 1.05rem;">
                             €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.total_cost, 0).toFixed(2) }}
                           </td>
@@ -6426,7 +6462,7 @@ watch(cleaningSelectedDate, () => {
                         <input v-model="newTransactionForm.description" type="text" placeholder="e.g. Detergent, Cash advance..." style="padding: 0.65rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
                       </div>
 
-                      <button @click="addCleanerTransaction(); showTransactionsManager = false;" class="submit-btn" style="width: 100%; justify-content: center; padding: 0.75rem; margin-top: 0.5rem; font-weight: 700;">
+                      <button @click="addCleanerTransaction" class="submit-btn" style="width: 100%; justify-content: center; padding: 0.75rem; margin-top: 0.5rem; font-weight: 700;">
                         <span class="material-icons-outlined" style="font-size: 1.15rem; margin-right: 0.35rem;">add_circle_outline</span>
                         Save Transaction
                       </button>
