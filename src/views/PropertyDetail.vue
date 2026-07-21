@@ -484,12 +484,18 @@ onUnmounted(() => {
   aspect-ratio: 16/10;
   overflow: hidden;
   border-radius: 4px;
+  background-color: var(--primary); /* Deep brand background to fill empty spaces nicely */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .main-image img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
 }
 
 .thumbnail-grid {
@@ -875,8 +881,10 @@ onUnmounted(() => {
 }
 
 .lightbox-content img {
-  width: 100%;
-  height: 100%;
+  max-width: 100%;
+  max-height: 75vh;
+  width: auto;
+  height: auto;
   object-fit: contain;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
 }
