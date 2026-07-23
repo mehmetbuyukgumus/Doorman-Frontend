@@ -61,6 +61,11 @@ const showQuickBookingModal = ref(false);
 const quickBookingPropertyId = ref(null);
 
 const currentConciergeView = ref('calendar');
+const dashboardPropertyId = ref('all');
+const dashboardYear = ref(new Date().getFullYear());
+const dashboardHoveredMonth = ref(null);
+const dashboardShowGross = ref(true);
+const dashboardShowDoorman = ref(true);
 const bookingForm = ref({
   id: null,
   start_date: "",
@@ -70,8 +75,10 @@ const bookingForm = ref({
   platform: "resaoff",
   platform_fee: 0,
   commission_rate: 20,
-  notes: ""
+  notes: "",
+  is_block: false
 });
+
 
 // Cleaning management state
 const cleaners = ref([]);
@@ -1530,60 +1537,80 @@ const getBookingBarStyle = (booking, isStart, isEnd, dayBookings = []) => {
     color = '#ffffff';
   }
   
-  const hasBoth = dayBookings.length > 1;
-  
-  if (hasBoth) {
-    if (isEnd) {
-      // Checkout booking takes left 50%
-      return {
-        background: bg,
-        color: color,
-        width: '50%',
-        left: '0',
-        right: 'auto',
-        borderTopLeftRadius: '0',
-        borderBottomLeftRadius: '0',
-        borderTopRightRadius: '18px',
-        borderBottomRightRadius: '18px',
-        marginLeft: '0',
-        marginRight: '0',
-        zIndex: 2,
-        overflow: 'hidden'
-      };
-    } else if (isStart) {
-      // Checkin booking takes right 50%
-      return {
-        background: bg,
-        color: color,
-        width: '50%',
-        left: 'auto',
-        right: '0',
-        borderTopLeftRadius: '18px',
-        borderBottomLeftRadius: '18px',
-        borderTopRightRadius: '0',
-        borderBottomRightRadius: '0',
-        marginLeft: '0',
-        marginRight: '0',
-        zIndex: 3,
-        overflow: 'visible'
-      };
-    }
+  if (booking.is_block) {
+    bg = '#64748b'; // slate gray for blocks
+    color = '#ffffff';
   }
   
+  // night-based PMS calendar logic:
+  // - check-in day (isStart): right 50% (since check-in is in afternoon)
+  // - check-out day (isEnd): left 50% (since check-out is in morning)
+  // - middle day: 100%
+  
+  if (isStart && isEnd) {
+    // Single day booking (starts and ends same day, rare)
+    return {
+      background: bg,
+      color: color,
+      width: '100%',
+      left: '0',
+      right: '0',
+      borderTopLeftRadius: '18px',
+      borderBottomLeftRadius: '18px',
+      borderTopRightRadius: '18px',
+      borderBottomRightRadius: '18px',
+      zIndex: 3,
+      overflow: 'visible'
+    };
+  }
+  
+  if (isStart) {
+    // Check-in day: right 50% of the cell
+    return {
+      background: bg,
+      color: color,
+      width: '50%',
+      left: 'auto',
+      right: '0',
+      borderTopLeftRadius: '18px',
+      borderBottomLeftRadius: '18px',
+      borderTopRightRadius: '0',
+      borderBottomRightRadius: '0',
+      zIndex: 3,
+      overflow: 'visible'
+    };
+  }
+  
+  if (isEnd) {
+    // Check-out day: left 50% of the cell
+    return {
+      background: bg,
+      color: color,
+      width: '50%',
+      left: '0',
+      right: 'auto',
+      borderTopLeftRadius: '0',
+      borderBottomLeftRadius: '0',
+      borderTopRightRadius: '18px',
+      borderBottomRightRadius: '18px',
+      zIndex: 2,
+      overflow: 'hidden'
+    };
+  }
+  
+  // Middle day: 100% cell width
   return {
     background: bg,
     color: color,
     width: '100%',
     left: '0',
     right: '0',
-    marginLeft: isStart ? '4px' : '0',
-    marginRight: isEnd ? '4px' : '0',
-    borderTopLeftRadius: isStart ? '18px' : '0',
-    borderBottomLeftRadius: isStart ? '18px' : '0',
-    borderTopRightRadius: isEnd ? '18px' : '0',
-    borderBottomRightRadius: isEnd ? '18px' : '0',
-    zIndex: isStart ? 3 : 2,
-    overflow: isStart ? 'visible' : 'hidden'
+    borderTopLeftRadius: '0',
+    borderBottomLeftRadius: '0',
+    borderTopRightRadius: '0',
+    borderBottomRightRadius: '0',
+    zIndex: 2,
+    overflow: 'hidden'
   };
 };
 
@@ -2024,12 +2051,123 @@ const filteredConciergePropertyBookings = computed(() => {
   }
   
   const list = selectedConciergeDetailsProperty.value.bookings.filter(b => {
-    if (!b.start_date) return false;
-    const d = parseISODateLocal(b.start_date);
-    return d.getFullYear() === year && d.getMonth() === month;
+    if (!b.start_date || !b.end_date) return false;
+    const start = parseISODateLocal(b.start_date);
+    const end = parseISODateLocal(b.end_date);
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0, 23, 59, 59);
+    return start <= lastDay && end >= firstDay;
   });
 
   return list.sort((a, b) => parseISODateLocal(a.start_date) - parseISODateLocal(b.start_date));
+});
+
+const dashboardYears = computed(() => {
+  const years = new Set([new Date().getFullYear()]);
+  conciergeProperties.value.forEach(prop => {
+    (prop.bookings || []).forEach(b => {
+      if (b.start_date) {
+        years.add(new Date(b.start_date).getFullYear());
+      }
+    });
+  });
+  return Array.from(years).sort((a, b) => b - a);
+});
+
+const dashboardStats = computed(() => {
+  const year = parseInt(dashboardYear.value);
+  const propId = dashboardPropertyId.value;
+  
+  const targetProps = propId === 'all' 
+    ? conciergeProperties.value 
+    : conciergeProperties.value.filter(p => p.id === parseInt(propId));
+    
+  const months = Array.from({ length: 12 }, (_, idx) => {
+    return {
+      monthIdx: idx,
+      monthName: new Date(year, idx, 1).toLocaleString('en-US', { month: 'short' }),
+      totalDays: 0,
+      occupiedDays: 0,
+      blockedDays: 0,
+      grossRevenue: 0,
+      doormanEarnings: 0,
+      bookingsCount: 0,
+      occupancyRate: 0
+    };
+  });
+  
+  targetProps.forEach(prop => {
+    for (let m = 0; m < 12; m++) {
+      const lastDayOfMonth = new Date(year, m + 1, 0);
+      const daysInMonth = lastDayOfMonth.getDate();
+      
+      months[m].totalDays += daysInMonth;
+      
+      const bookings = prop.bookings || [];
+      const occupiedSet = new Set();
+      const blockedSet = new Set();
+      
+      bookings.forEach(b => {
+        if (!b.start_date || !b.end_date) return;
+        const bStart = parseISODateLocal(b.start_date);
+        const bEnd = parseISODateLocal(b.end_date);
+        
+        const temp = new Date(bStart);
+        while (temp < bEnd) {
+          if (temp.getFullYear() === year && temp.getMonth() === m) {
+            const dateNum = temp.getDate();
+            if (b.is_block) {
+              blockedSet.add(dateNum);
+            } else {
+              occupiedSet.add(dateNum);
+            }
+          }
+          temp.setDate(temp.getDate() + 1);
+        }
+        
+        if (bStart.getFullYear() === year && bStart.getMonth() === m && !b.is_block) {
+          months[m].grossRevenue += parseFloat(b.price || 0);
+          months[m].doormanEarnings += parseFloat(b.doorman_commission || 0);
+          months[m].bookingsCount++;
+        }
+      });
+      
+      months[m].occupiedDays += occupiedSet.size;
+      months[m].blockedDays += blockedSet.size;
+    }
+  });
+  
+  let totalGross = 0;
+  let totalDoorman = 0;
+  let totalOccupied = 0;
+  let totalBlocked = 0;
+  let totalRentableDays = 0;
+  let totalBookings = 0;
+  
+  months.forEach(m => {
+    const rentableDays = m.totalDays - m.blockedDays;
+    m.occupancyRate = rentableDays > 0 ? (m.occupiedDays / rentableDays) * 100 : 0;
+    if (m.occupancyRate > 100) m.occupancyRate = 100;
+    
+    totalGross += m.grossRevenue;
+    totalDoorman += m.doormanEarnings;
+    totalOccupied += m.occupiedDays;
+    totalBlocked += m.blockedDays;
+    totalRentableDays += Math.max(0, rentableDays);
+    totalBookings += m.bookingsCount;
+  });
+  
+  const avgOccupancy = totalRentableDays > 0 ? (totalOccupied / totalRentableDays) * 100 : 0;
+  
+  return {
+    months,
+    totalGross,
+    totalDoorman,
+    totalOccupied,
+    totalBlocked,
+    totalBookings,
+    avgOccupancy: avgOccupancy > 100 ? 100 : avgOccupancy
+  };
 });
 
 const openBookingModal = (prop, startDate = "", endDate = "") => {
@@ -2154,7 +2292,8 @@ const selectBookingForEdit = (b) => {
     platform: b.platform || "resaoff",
     platform_fee: b.platform_fee || 0,
     commission_rate: b.commission_rate || 20,
-    notes: b.notes || ""
+    notes: b.notes || "",
+    is_block: !!b.is_block
   };
 };
 
@@ -2168,7 +2307,8 @@ const resetBookingForm = () => {
     platform: "resaoff",
     platform_fee: 0,
     commission_rate: 20,
-    notes: ""
+    notes: "",
+    is_block: false
   };
   quickBookingPropertyId.value = null;
 };
@@ -2194,11 +2334,12 @@ const saveQuickBooking = async () => {
   const payload = {
     start_date: bookingForm.value.start_date,
     end_date: bookingForm.value.end_date,
-    guest_name: bookingForm.value.guest_name,
-    price: bookingForm.value.price,
-    platform: bookingForm.value.platform,
-    platform_fee: bookingForm.value.platform_fee,
-    commission_rate: bookingForm.value.commission_rate,
+    guest_name: bookingForm.value.is_block ? "Blocked" : bookingForm.value.guest_name,
+    price: bookingForm.value.is_block ? 0 : bookingForm.value.price,
+    platform: bookingForm.value.is_block ? "resaoff" : bookingForm.value.platform,
+    platform_fee: bookingForm.value.is_block ? 0 : bookingForm.value.platform_fee,
+    commission_rate: bookingForm.value.is_block ? 0 : bookingForm.value.commission_rate,
+    is_block: !!bookingForm.value.is_block,
     notes: bookingForm.value.notes
   };
   
@@ -2237,11 +2378,12 @@ const saveAdvancedBooking = async () => {
   const payload = {
     start_date: bookingForm.value.start_date,
     end_date: bookingForm.value.end_date,
-    guest_name: bookingForm.value.guest_name,
-    price: bookingForm.value.price,
-    platform: bookingForm.value.platform,
-    platform_fee: bookingForm.value.platform_fee,
-    commission_rate: bookingForm.value.commission_rate,
+    guest_name: bookingForm.value.is_block ? "Blocked" : bookingForm.value.guest_name,
+    price: bookingForm.value.is_block ? 0 : bookingForm.value.price,
+    platform: bookingForm.value.is_block ? "resaoff" : bookingForm.value.platform,
+    platform_fee: bookingForm.value.is_block ? 0 : bookingForm.value.platform_fee,
+    commission_rate: bookingForm.value.is_block ? 0 : bookingForm.value.commission_rate,
+    is_block: !!bookingForm.value.is_block,
     notes: bookingForm.value.notes
   };
   
@@ -2292,28 +2434,194 @@ const deleteConciergeBookingInDetails = async (bookingId) => {
   }
 };
 
+const selectionState = ref({
+  propertyId: null,
+  startDate: null,
+  endDate: null,
+  hoverDate: null
+});
+
+const showCalendarSelectionModal = ref(false);
+
+const handleDayCellMouseEnter = (prop, day) => {
+  if (selectionState.value.propertyId === prop.id && selectionState.value.startDate && !selectionState.value.endDate) {
+    selectionState.value.hoverDate = day;
+  }
+};
+
 const handleDayCellClick = (prop, day) => {
-  const state = getBookingState(prop, day);
-  openPropertyFullPage(prop);
-  if (state.isBooked) {
-    selectBookingForEdit(state.booking);
+  const state = selectionState.value;
+  
+  if (state.propertyId !== prop.id || !state.startDate) {
+    // Start selection
+    state.propertyId = prop.id;
+    state.startDate = day;
+    state.endDate = null;
+    state.hoverDate = day;
   } else {
-    const dateStr = formatDateToISO(day);
-    const nextDay = new Date(day.getTime() + 24 * 60 * 60 * 1000);
-    const nextDayStr = formatDateToISO(nextDay);
-    
+    // Second click
+    if (state.startDate.getTime() === day.getTime()) {
+      // Clicked the same day -> Single cell action
+      const cellState = getBookingState(prop, day);
+      openPropertyFullPage(prop);
+      if (cellState.isBooked) {
+        selectBookingForEdit(cellState.booking);
+      } else {
+        const dateStr = formatDateToISO(day);
+        const nextDay = new Date(day.getTime() + 24 * 60 * 60 * 1000);
+        const nextDayStr = formatDateToISO(nextDay);
+        
+        bookingForm.value = {
+          id: null,
+          start_date: dateStr,
+          end_date: nextDayStr,
+          guest_name: "",
+          price: 0,
+          platform: "resaoff",
+          platform_fee: 0,
+          commission_rate: 20,
+          notes: "",
+          is_block: false
+        };
+      }
+      cancelCalendarSelection();
+    } else {
+      // Clicked a different day -> Range selection complete
+      state.endDate = day;
+      showCalendarSelectionModal.value = true;
+    }
+  }
+};
+
+const cancelCalendarSelection = () => {
+  selectionState.value = {
+    propertyId: null,
+    startDate: null,
+    endDate: null,
+    hoverDate: null
+  };
+  showCalendarSelectionModal.value = false;
+};
+
+const selectedPropertyTitle = computed(() => {
+  if (!selectionState.value.propertyId) return "";
+  const prop = conciergeProperties.value.find(p => p.id === selectionState.value.propertyId);
+  return prop ? prop.title : "";
+});
+
+const formattedSelectionDates = computed(() => {
+  const state = selectionState.value;
+  if (!state.startDate) return "";
+  
+  const d1 = state.startDate;
+  const d2 = state.endDate || state.hoverDate || d1;
+  
+  const min = new Date(Math.min(d1.getTime(), d2.getTime()));
+  const max = new Date(Math.max(d1.getTime(), d2.getTime()));
+  
+  return `${formatDateToEU(formatDateToISO(min))} - ${formatDateToEU(formatDateToISO(max))}`;
+});
+
+const handleCalendarAction = async (action) => {
+  const state = selectionState.value;
+  if (!state.startDate || !state.propertyId) return;
+
+  const d1 = state.startDate;
+  const d2 = state.endDate || state.hoverDate || d1;
+  
+  const min = new Date(Math.min(d1.getTime(), d2.getTime()));
+  const max = new Date(Math.max(d1.getTime(), d2.getTime()));
+  
+  const startDateStr = formatDateToISO(min);
+  const endDateStr = formatDateToISO(max);
+
+  const token = localStorage.getItem("admin_token");
+  const propId = state.propertyId;
+
+  if (action === 'block') {
+    const payload = {
+      start_date: startDateStr,
+      end_date: endDateStr,
+      guest_name: "Blocked",
+      price: 0,
+      platform: "resaoff",
+      platform_fee: 0,
+      commission_rate: 0,
+      is_block: true,
+      notes: "Blocked via calendar selection"
+    };
+
+    try {
+      const res = await fetch(`${backendUrl}/concierge/${propId}/bookings`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        await fetchConciergeProperties();
+        alert("Calendar range successfully blocked!");
+      } else {
+        const err = await res.json();
+        alert(`Error: ${err.detail}`);
+      }
+    } catch (err) {
+      alert("Network error.");
+    }
+    cancelCalendarSelection();
+  } else if (action === 'unblock') {
+    try {
+      const url = `${backendUrl}/concierge/${propId}/unblock?start_date=${startDateStr}&end_date=${endDateStr}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      if (res.ok) {
+        await fetchConciergeProperties();
+        alert("Calendar range successfully opened!");
+      } else {
+        const err = await res.json();
+        alert(`Error: ${err.detail}`);
+      }
+    } catch (err) {
+      alert("Network error.");
+    }
+    cancelCalendarSelection();
+  } else if (action === 'book') {
+    currentConciergeView.value = 'add-reservation';
+    quickBookingPropertyId.value = propId;
     bookingForm.value = {
       id: null,
-      start_date: dateStr,
-      end_date: nextDayStr,
+      start_date: startDateStr,
+      end_date: endDateStr,
       guest_name: "",
       price: 0,
       platform: "resaoff",
       platform_fee: 0,
       commission_rate: 20,
-      notes: ""
+      notes: "",
+      is_block: false
     };
+    cancelCalendarSelection();
   }
+};
+
+const isCellSelected = (prop, day) => {
+  const state = selectionState.value;
+  if (state.propertyId !== prop.id || !state.startDate) return false;
+  
+  const start = state.startDate.getTime();
+  const end = state.endDate ? state.endDate.getTime() : (state.hoverDate ? state.hoverDate.getTime() : start);
+  
+  const min = Math.min(start, end);
+  const max = Math.max(start, end);
+  const cur = day.getTime();
+  
+  return cur >= min && cur <= max;
 };
 
 const fetchUsers = async () => {
@@ -2795,6 +3103,43 @@ const removeMedia = async (index) => {
 
   newProperty.value.media.splice(index, 1);
 };
+
+// Drag and Drop reordering for Property Images
+const draggedMediaIndex = ref(null);
+
+const handleDragStart = (idx, event) => {
+  draggedMediaIndex.value = idx;
+  event.dataTransfer.effectAllowed = "move";
+  // Add a ghost image styling if needed
+  if (event.currentTarget) {
+    event.currentTarget.classList.add("dragging");
+  }
+};
+
+const handleDragOver = (idx, event) => {
+  event.preventDefault();
+};
+
+const handleDrop = (idx, event) => {
+  event.preventDefault();
+  const draggedIdx = draggedMediaIndex.value;
+  if (draggedIdx === null || draggedIdx === idx) return;
+
+  const mediaList = [...newProperty.value.media];
+  const draggedItem = mediaList.splice(draggedIdx, 1)[0];
+  mediaList.splice(idx, 0, draggedItem);
+
+  newProperty.value.media = mediaList;
+  draggedMediaIndex.value = null;
+};
+
+const handleDragEnd = (event) => {
+  draggedMediaIndex.value = null;
+  if (event.currentTarget) {
+    event.currentTarget.classList.remove("dragging");
+  }
+};
+
 
 const fetchContactMessages = async () => {
   const token = localStorage.getItem("admin_token");
@@ -3633,8 +3978,18 @@ watch(cleaningSelectedDate, () => {
                     v-for="(m, idx) in newProperty.media"
                     :key="idx"
                     class="preview-item"
+                    draggable="true"
+                    @dragstart="handleDragStart(idx, $event)"
+                    @dragover="handleDragOver(idx, $event)"
+                    @drop="handleDrop(idx, $event)"
+                    @dragend="handleDragEnd($event)"
+                    :style="draggedMediaIndex === idx ? 'opacity: 0.4; border: 2px dashed var(--accent);' : ''"
                   >
-                    <img :src="m.url" alt="Preview" />
+                    <!-- Drag handle icon -->
+                    <div class="drag-handle" style="position: absolute; top: 5px; left: 5px; background: rgba(255,255,255,0.8); border-radius: 3px; padding: 2px; display: flex; align-items: center; justify-content: center; cursor: grab; box-shadow: 0 1px 3px rgba(0,0,0,0.15); z-index: 10;">
+                      <span class="material-icons-outlined" style="font-size: 1rem; color: var(--primary);">drag_indicator</span>
+                    </div>
+                    <img :src="m.url" alt="Preview" style="cursor: grab;" />
                     <button
                       type="button"
                       @click="removeMedia(idx)"
@@ -5266,94 +5621,82 @@ watch(cleaningSelectedDate, () => {
       <!-- CONCIERGE SERVICES MANAGEMENT -->
       <div v-if="activeTab === 'concierge'" class="tab-content">
         <!-- Header row -->
-        <div class="tab-header-row">
-          <h1 class="tab-title">
-            {{ showConciergeForm ? (isEditingConcierge ? 'Edit Concierge Property' : 'Add Concierge Property') : (currentConciergeView === 'property-details' ? (selectedConciergeDetailsProperty?.title + ' Dashboard') : currentConciergeView === 'add-reservation' ? 'Add New Reservation' : currentConciergeView === 'reservations-list' ? 'All Reservations' : currentConciergeView === 'cleaning' ? 'Cleaning Schedule' : currentConciergeView === 'cleaning-report' ? 'Cleaning Report' : 'Concierge Services') }}
+        <div class="tab-header-row" style="border-bottom: 2px solid #e5e7eb; padding-bottom: 1rem; margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;">
+          <h1 class="tab-title" style="margin: 0; font-size: 1.5rem; color: var(--primary);">
+            Concierge Services
           </h1>
           <div style="display: flex; gap: 1rem;">
-            <button 
-              v-if="!showConciergeForm && currentConciergeView === 'calendar'" 
-              @click="startAddConcierge" 
-              class="action-header-btn secondary-btn"
-            >
-              <span class="material-icons-outlined">add</span>
-              Add Short-Term Property
-            </button>
-            <button 
-              v-if="!showConciergeForm && currentConciergeView === 'calendar'" 
-              @click="currentConciergeView = 'reservations-list'" 
-              class="action-header-btn secondary-btn"
-            >
-              <span class="material-icons-outlined">list_alt</span>
-              Reservations List
-            </button>
-            <button 
-              v-if="!showConciergeForm && currentConciergeView === 'calendar'" 
-              @click="currentConciergeView = 'cleaning'" 
-              class="action-header-btn secondary-btn"
-            >
-              <span class="material-icons-outlined">cleaning_services</span>
-              Cleaning
-            </button>
-            <button 
-              v-if="!showConciergeForm && currentConciergeView === 'cleaning'" 
-              @click="currentConciergeView = 'cleaning-report'; fetchReportCleaningAssignments(); fetchCleanerTransactions();" 
-              class="action-header-btn secondary-btn"
-            >
-              <span class="material-icons-outlined">summarize</span>
-              Cleaning Report
-            </button>
-            <button 
-              v-if="!showConciergeForm && currentConciergeView === 'calendar'" 
-              @click="currentConciergeView = 'reports-tracking'" 
-              class="action-header-btn secondary-btn"
-            >
-              <span class="material-icons-outlined">mail_outline</span>
-              Reports Tracking
-            </button>
-            <button 
-              v-if="!showConciergeForm && currentConciergeView === 'calendar'" 
-              @click="openQuickBooking" 
-              class="action-header-btn"
-              style="background-color: var(--accent); color: var(--primary);"
-            >
-              <span class="material-icons-outlined">calendar_today</span>
-              Add Reservation
-            </button>
-            <button 
-              v-if="!showConciergeForm && currentConciergeView === 'property-details'" 
-              @click="startEditConcierge(selectedConciergeDetailsProperty)" 
-              class="action-header-btn"
-              style="background-color: var(--accent); color: var(--primary);"
-            >
-              <span class="material-icons-outlined">edit</span>
-              Edit Property Info
-            </button>
-            <button 
-              v-if="!showConciergeForm && currentConciergeView === 'cleaning-report'" 
-              @click="currentConciergeView = 'cleaning'" 
-              class="action-header-btn secondary-btn"
-            >
-              <span class="material-icons-outlined">arrow_back</span>
-              Back to Cleaning
-            </button>
-            <button 
-              v-if="!showConciergeForm && (currentConciergeView === 'property-details' || currentConciergeView === 'add-reservation' || currentConciergeView === 'reservations-list' || currentConciergeView === 'cleaning' || currentConciergeView === 'reports-tracking')" 
-              @click="currentConciergeView = 'calendar'" 
-              class="action-header-btn secondary-btn"
-            >
-              <span class="material-icons-outlined">arrow_back</span>
-              Back to Timeline
-            </button>
             <button 
               v-if="showConciergeForm" 
               @click="cancelEditConcierge" 
               class="action-header-btn secondary-btn"
             >
               <span class="material-icons-outlined">arrow_back</span>
-              Back to Dashboard
+              Cancel
+            </button>
+            <button 
+              v-if="!showConciergeForm" 
+              @click="startAddConcierge" 
+              class="action-header-btn"
+              style="background-color: var(--accent); color: var(--primary);"
+            >
+              <span class="material-icons-outlined">add</span>
+              Add Property
             </button>
           </div>
+        </div>
+
+        <!-- Sub-navigation Bar (Under the Line) -->
+        <div v-if="!showConciergeForm" style="display: flex; gap: 0.5rem; border-bottom: 1px solid #f3f4f6; padding-bottom: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; align-items: center;">
+          <button 
+            @click="currentConciergeView = 'dashboard'" 
+            class="action-header-btn" 
+            :style="currentConciergeView === 'dashboard' ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
+          >
+            <span class="material-icons-outlined" style="margin-right: 0.25rem;">dashboard</span>
+            Dashboard
+          </button>
+          <button 
+            @click="currentConciergeView = 'calendar'" 
+            class="action-header-btn" 
+            :style="currentConciergeView === 'calendar' ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
+          >
+            <span class="material-icons-outlined" style="margin-right: 0.25rem;">calendar_month</span>
+            Timeline
+          </button>
+          <button 
+            @click="currentConciergeView = 'reservations-list'" 
+            class="action-header-btn" 
+            :style="currentConciergeView === 'reservations-list' ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
+          >
+            <span class="material-icons-outlined" style="margin-right: 0.25rem;">list_alt</span>
+            Reservations List
+          </button>
+          <button 
+            @click="currentConciergeView = 'cleaning'" 
+            class="action-header-btn" 
+            :style="currentConciergeView === 'cleaning' || currentConciergeView === 'cleaning-report' ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
+          >
+            <span class="material-icons-outlined" style="margin-right: 0.25rem;">cleaning_services</span>
+            Cleaning Schedule
+          </button>
+          <button 
+            @click="currentConciergeView = 'reports-tracking'" 
+            class="action-header-btn" 
+            :style="currentConciergeView === 'reports-tracking' ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
+          >
+            <span class="material-icons-outlined" style="margin-right: 0.25rem;">mail_outline</span>
+            Reports Tracking
+          </button>
+          
+          <button 
+            @click="openQuickBooking" 
+            class="action-header-btn secondary-btn"
+            style="margin-left: auto; background-color: white; border: 1px solid #d1d5db;"
+          >
+            <span class="material-icons-outlined">calendar_today</span>
+            Add Reservation
+          </button>
         </div>
 
         <!-- Add/Edit Concierge Form -->
@@ -5400,6 +5743,414 @@ watch(cleaningSelectedDate, () => {
             </div>
           </form>
         </section>
+
+        <!-- Concierge Performance Dashboard -->
+        <div v-else-if="currentConciergeView === 'dashboard'" class="concierge-dashboard" style="display: flex; flex-direction: column; gap: 1.5rem;">
+          
+          <!-- Filters & Header Bar -->
+          <div class="card" style="padding: 1.25rem 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <span class="material-icons-outlined" style="color: var(--primary); font-size: 1.5rem;">analytics</span>
+              <span style="font-weight: 700; color: var(--primary); font-size: 1.1rem;">Dashboard Filters</span>
+            </div>
+            
+            <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
+              <!-- Property Dropdown -->
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <label style="font-size: 0.8rem; font-weight: 700; color: #4b5563; text-transform: uppercase;">Property:</label>
+                <select v-model="dashboardPropertyId" style="padding: 0.5rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background: white; min-width: 180px;">
+                  <option value="all">All Properties (Combined)</option>
+                  <option v-for="p in conciergeProperties" :key="p.id" :value="p.id">{{ p.title }}</option>
+                </select>
+              </div>
+              
+              <!-- Year Dropdown -->
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <label style="font-size: 0.8rem; font-weight: 700; color: #4b5563; text-transform: uppercase;">Year:</label>
+                <select v-model="dashboardYear" style="padding: 0.5rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background: white; min-width: 100px;">
+                  <option v-for="yr in dashboardYears" :key="yr" :value="yr">{{ yr }}</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- KPI Cards Grid -->
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.25rem;">
+            
+            <!-- Avg Occupancy Rate -->
+            <div class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02); display: flex; align-items: center; gap: 1rem; position: relative; overflow: hidden;">
+              <div style="background: #eff6ff; color: #2563eb; width: 48px; height: 48px; border-radius: 10px; display: flex; align-items: center; justify-content: center;">
+                <span class="material-icons-outlined" style="font-size: 1.5rem;">percent</span>
+              </div>
+              <div>
+                <span style="font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; display: block;">Avg Occupancy Rate</span>
+                <strong style="font-size: 1.4rem; color: #0f172a; display: block; margin: 0.1rem 0;">{{ dashboardStats.avgOccupancy.toFixed(1) }}%</strong>
+                <div style="width: 100%; background: #e2e8f0; height: 6px; border-radius: 3px; margin-top: 0.4rem; overflow: hidden;">
+                  <div :style="{ width: dashboardStats.avgOccupancy + '%' }" style="background: #2563eb; height: 100%; border-radius: 3px; transition: width 0.6s ease;"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Gross Revenue -->
+            <div class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02); display: flex; align-items: center; gap: 1rem;">
+              <div style="background: #f0fdf4; color: #16a34a; width: 48px; height: 48px; border-radius: 10px; display: flex; align-items: center; justify-content: center;">
+                <span class="material-icons-outlined" style="font-size: 1.5rem;">payments</span>
+              </div>
+              <div>
+                <span style="font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; display: block;">Gross Revenue</span>
+                <strong style="font-size: 1.4rem; color: #0f172a; display: block;">€{{ dashboardStats.totalGross.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</strong>
+                <span style="font-size: 0.72rem; color: #6b7280; display: block; margin-top: 0.2rem;">Total gross listing price</span>
+              </div>
+            </div>
+
+            <!-- Doorman Net Earnings -->
+            <div class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02); display: flex; align-items: center; gap: 1rem;">
+              <div style="background: #fffbeb; color: #d97706; width: 48px; height: 48px; border-radius: 10px; display: flex; align-items: center; justify-content: center;">
+                <span class="material-icons-outlined" style="font-size: 1.5rem;">savings</span>
+              </div>
+              <div>
+                <span style="font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; display: block;">Doorman Payout</span>
+                <strong style="font-size: 1.4rem; color: #0f172a; display: block;">€{{ dashboardStats.totalDoorman.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</strong>
+                <span style="font-size: 0.72rem; color: #d97706; font-weight: 700; display: block; margin-top: 0.2rem;">Net commission share</span>
+              </div>
+            </div>
+
+            <!-- Stays & Nights Count -->
+            <div class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02); display: flex; align-items: center; gap: 1rem;">
+              <div style="background: #faf5ff; color: #7c3aed; width: 48px; height: 48px; border-radius: 10px; display: flex; align-items: center; justify-content: center;">
+                <span class="material-icons-outlined" style="font-size: 1.5rem;">hotel</span>
+              </div>
+              <div>
+                <span style="font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; display: block;">Bookings & Occupied</span>
+                <strong style="font-size: 1.4rem; color: #0f172a; display: block;">{{ dashboardStats.totalBookings }} bookings</strong>
+                <span style="font-size: 0.72rem; color: #6b7280; display: block; margin-top: 0.2rem;">{{ dashboardStats.totalOccupied }} occupied nights / {{ dashboardStats.totalBlocked }} blocked</span>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Charts Section Grid -->
+          <div style="display: grid; grid-template-columns: 1fr; gap: 1.5rem;">
+            
+            <!-- Chart 1: Occupancy Rate Trend Line Chart -->
+            <div class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
+              <h3 style="font-size: 1rem; color: var(--primary); font-weight: 700; margin: 0 0 1rem 0; display: flex; align-items: center; gap: 0.5rem;">
+                <span class="material-icons-outlined" style="color: #2563eb;">trending_up</span>
+                Monthly Occupancy Trend ({{ dashboardYear }})
+              </h3>
+              
+              <!-- SVG Graph wrapper -->
+              <div style="width: 100%; overflow-x: auto; padding-bottom: 0.5rem;">
+                <svg viewBox="0 0 1000 320" style="width: 100%; min-width: 800px; height: auto; display: block;">
+                  <!-- Definitions for Gradients -->
+                  <defs>
+                    <linearGradient id="occupancyGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#2563eb" stop-opacity="0.25" />
+                      <stop offset="100%" stop-color="#2563eb" stop-opacity="0.0" />
+                    </linearGradient>
+                  </defs>
+                  
+                  <!-- Y-Axis Grid Lines & Labels -->
+                  <g stroke="#f1f5f9" stroke-width="1">
+                    <!-- 100% -->
+                    <line x1="60" y1="40" x2="960" y2="40" />
+                    <!-- 75% -->
+                    <line x1="60" y1="100" x2="960" y2="100" />
+                    <!-- 50% -->
+                    <line x1="60" y1="160" x2="960" y2="160" />
+                    <!-- 25% -->
+                    <line x1="60" y1="220" x2="960" y2="220" />
+                    <!-- 0% -->
+                    <line x1="60" y1="280" x2="960" y2="280" stroke="#cbd5e1" stroke-width="1.5" />
+                  </g>
+                  
+                  <g fill="#64748b" font-size="11" font-weight="600" text-anchor="end">
+                    <text x="50" y="44">100%</text>
+                    <text x="50" y="104">75%</text>
+                    <text x="50" y="164">50%</text>
+                    <text x="50" y="224">25%</text>
+                    <text x="50" y="284">0%</text>
+                  </g>
+
+                  <!-- Draw Area / Line Under Path -->
+                  <path 
+                    :d="`
+                      M 80,280 
+                      L 80,${280 - (dashboardStats.months[0].occupancyRate / 100 * 240)}
+                      ${
+                        dashboardStats.months.map((m, idx) => {
+                          const x = 80 + idx * 78.18;
+                          const y = 280 - (m.occupancyRate / 100 * 240);
+                          return `L ${x},${y}`;
+                        }).join(' ')
+                      }
+                      L 940,280 Z
+                    `"
+                    fill="url(#occupancyGrad)"
+                  />
+                  
+                  <!-- Curved / Line Path -->
+                  <path 
+                    :d="`
+                      M 80,${280 - (dashboardStats.months[0].occupancyRate / 100 * 240)}
+                      ${
+                        dashboardStats.months.map((m, idx) => {
+                          const x = 80 + idx * 78.18;
+                          const y = 280 - (m.occupancyRate / 100 * 240);
+                          return `L ${x},${y}`;
+                        }).join(' ')
+                      }
+                    `"
+                    fill="none"
+                    stroke="#2563eb"
+                    stroke-width="3"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                  
+                  <!-- Interactive Hover Guides and Points -->
+                  <g v-for="(m, idx) in dashboardStats.months" :key="idx">
+                    <!-- Hover Trigger Column Box -->
+                    <rect 
+                      :x="80 + idx * 78.18 - 35" 
+                      y="30" 
+                      width="70" 
+                      height="260" 
+                      fill="transparent" 
+                      style="cursor: pointer;"
+                      @mouseenter="dashboardHoveredMonth = idx"
+                      @mouseleave="dashboardHoveredMonth = null"
+                    />
+                    
+                    <!-- Line marker on hover -->
+                    <line 
+                      v-if="dashboardHoveredMonth === idx"
+                      :x1="80 + idx * 78.18" 
+                      y1="40" 
+                      :x2="80 + idx * 78.18" 
+                      y2="280" 
+                      stroke="#93c5fd" 
+                      stroke-width="1"
+                      stroke-dasharray="4"
+                    />
+                    
+                    <!-- Month point dot -->
+                    <circle 
+                      :cx="80 + idx * 78.18" 
+                      :cy="280 - (m.occupancyRate / 100 * 240)" 
+                      :r="dashboardHoveredMonth === idx ? 7 : 5" 
+                      :fill="dashboardHoveredMonth === idx ? '#1d4ed8' : '#2563eb'" 
+                      stroke="white" 
+                      stroke-width="2"
+                      style="transition: all 0.15s ease;"
+                    />
+                    
+                    <!-- X-Axis Labels -->
+                    <text 
+                      :x="80 + idx * 78.18" 
+                      y="302" 
+                      fill="#64748b" 
+                      font-size="11" 
+                      font-weight="700" 
+                      text-anchor="middle"
+                      :style="dashboardHoveredMonth === idx ? 'fill: #0f172a; font-weight: 800;' : ''"
+                    >
+                      {{ m.monthName }}
+                    </text>
+                  </g>
+                  
+                  <!-- Overlay Tooltip right inside SVG -->
+                  <g v-if="dashboardHoveredMonth !== null" :transform="`translate(${Math.min(740, Math.max(10, 80 + dashboardHoveredMonth * 78.18 - 100))}, ${Math.max(10, 210 - (dashboardStats.months[dashboardHoveredMonth].occupancyRate / 100 * 240))})`" pointer-events="none">
+                    <rect width="200" height="95" rx="8" fill="#0f172a" opacity="0.95" />
+                    <text x="15" y="24" fill="white" font-size="12" font-weight="800">{{ dashboardStats.months[dashboardHoveredMonth].monthName }} {{ dashboardYear }}</text>
+                    
+                    <text x="15" y="44" fill="#94a3b8" font-size="10" font-weight="700">Occupancy Rate:</text>
+                    <text x="185" y="44" fill="#38bdf8" font-size="11" font-weight="800" text-anchor="end">{{ dashboardStats.months[dashboardHoveredMonth].occupancyRate.toFixed(1) }}%</text>
+                    
+                    <text x="15" y="62" fill="#94a3b8" font-size="10" font-weight="700">Occupied Nights:</text>
+                    <text x="185" y="62" fill="white" font-size="10" font-weight="700" text-anchor="end">{{ dashboardStats.months[dashboardHoveredMonth].occupiedDays }} days</text>
+                    
+                    <text x="15" y="80" fill="#94a3b8" font-size="10" font-weight="700">Blocked / Total:</text>
+                    <text x="185" y="80" fill="white" font-size="10" font-weight="700" text-anchor="end">{{ dashboardStats.months[dashboardHoveredMonth].blockedDays }} / {{ dashboardStats.months[dashboardHoveredMonth].totalDays }} days</text>
+                  </g>
+                </svg>
+              </div>
+            </div>
+
+            <!-- Chart 2: Revenue & Earnings Side-by-Side Bar Chart -->
+            <div class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
+              <h3 style="font-size: 1rem; color: var(--primary); font-weight: 700; margin: 0 0 1rem 0; display: flex; align-items: center; gap: 0.5rem;">
+                <span class="material-icons-outlined" style="color: #16a34a;">bar_chart</span>
+                Monthly Revenue & Doorman Earnings ({{ dashboardYear }})
+              </h3>
+              
+              <!-- SVG Graph wrapper -->
+              <div style="width: 100%; overflow-x: auto; padding-bottom: 0.5rem;">
+                <svg viewBox="0 0 1000 320" style="width: 100%; min-width: 800px; height: auto; display: block;">
+                  <!-- Definitions for Gradients -->
+                  <defs>
+                    <linearGradient id="revenueBarGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#4ade80" />
+                      <stop offset="100%" stop-color="#16a34a" />
+                    </linearGradient>
+                    <linearGradient id="doormanBarGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#fbbf24" />
+                      <stop offset="100%" stop-color="#d97706" />
+                    </linearGradient>
+                  </defs>
+                  
+                  <g stroke="#f1f5f9" stroke-width="1">
+                    <line x1="70" y1="40" x2="960" y2="40" />
+                    <line x1="70" y1="100" x2="960" y2="100" />
+                    <line x1="70" y1="160" x2="960" y2="160" />
+                    <line x1="70" y1="220" x2="960" y2="220" />
+                    <line x1="70" y1="280" x2="960" y2="280" stroke="#cbd5e1" stroke-width="1.5" />
+                  </g>
+                  
+                  <g fill="#64748b" font-size="10" font-weight="700" text-anchor="end">
+                    <text x="60" y="44">€{{ (Math.max(...dashboardStats.months.map(m => m.grossRevenue)) || 1000).toFixed(0) }}</text>
+                    <text x="60" y="104">€{{ ((Math.max(...dashboardStats.months.map(m => m.grossRevenue)) || 1000) * 0.75).toFixed(0) }}</text>
+                    <text x="60" y="164">€{{ ((Math.max(...dashboardStats.months.map(m => m.grossRevenue)) || 1000) * 0.5).toFixed(0) }}</text>
+                    <text x="60" y="224">€{{ ((Math.max(...dashboardStats.months.map(m => m.grossRevenue)) || 1000) * 0.25).toFixed(0) }}</text>
+                    <text x="60" y="284">€0</text>
+                  </g>
+
+                  <g v-for="(m, idx) in dashboardStats.months" :key="idx">
+                    <!-- Gross Revenue Bar -->
+                    <rect 
+                      v-if="dashboardShowGross"
+                      :x="(dashboardShowDoorman ? 95 : 105) + idx * 74" 
+                      :y="280 - (m.grossRevenue / (Math.max(...dashboardStats.months.map(item => item.grossRevenue)) || 1000) * 240)" 
+                      width="18" 
+                      :height="(m.grossRevenue / (Math.max(...dashboardStats.months.map(item => item.grossRevenue)) || 1000) * 240)" 
+                      fill="url(#revenueBarGrad)" 
+                      rx="3" 
+                    />
+                    
+                    <!-- Doorman Commission Bar -->
+                    <rect 
+                      v-if="dashboardShowDoorman"
+                      :x="(dashboardShowGross ? 116 : 105) + idx * 74" 
+                      :y="280 - (m.doormanEarnings / (Math.max(...dashboardStats.months.map(item => item.grossRevenue)) || 1000) * 240)" 
+                      width="18" 
+                      :height="(m.doormanEarnings / (Math.max(...dashboardStats.months.map(item => item.grossRevenue)) || 1000) * 240)" 
+                      fill="url(#doormanBarGrad)" 
+                      rx="3" 
+                    />
+                    
+                    <!-- Text values above Gross Revenue bar -->
+                    <text 
+                      v-if="dashboardShowGross && m.grossRevenue > 0" 
+                      :x="(dashboardShowDoorman ? 104 : 114) + idx * 74" 
+                      :y="275 - (m.grossRevenue / (Math.max(...dashboardStats.months.map(item => item.grossRevenue)) || 1000) * 240)"
+                      fill="#16a34a"
+                      font-size="9"
+                      font-weight="700"
+                      text-anchor="middle"
+                    >
+                      €{{ m.grossRevenue.toFixed(0) }}
+                    </text>
+
+                    <!-- Text values above Doorman Earnings bar -->
+                    <text 
+                      v-if="dashboardShowDoorman && m.doormanEarnings > 0" 
+                      :x="(dashboardShowGross ? 125 : 114) + idx * 74" 
+                      :y="275 - (m.doormanEarnings / (Math.max(...dashboardStats.months.map(item => item.grossRevenue)) || 1000) * 240)"
+                      fill="#d97706"
+                      font-size="9"
+                      font-weight="700"
+                      text-anchor="middle"
+                    >
+                      €{{ m.doormanEarnings.toFixed(0) }}
+                    </text>
+
+                    <text 
+                      :x="114 + idx * 74" 
+                      y="302" 
+                      fill="#64748b" 
+                      font-size="11" 
+                      font-weight="700" 
+                      text-anchor="middle"
+                    >
+                      {{ m.monthName }}
+                    </text>
+                  </g>
+                </svg>
+              </div>
+
+              <!-- Interactive Legend -->
+              <div style="display: flex; justify-content: center; gap: 2rem; margin-top: 1.25rem; font-size: 0.85rem; font-weight: 700;">
+                <div 
+                  @click="dashboardShowGross = !dashboardShowGross" 
+                  style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 4px 12px; border-radius: 6px; transition: all 0.2s; user-select: none;"
+                  :style="dashboardShowGross ? 'background: #f0fdf4; border: 1px solid #bbf7d0;' : 'opacity: 0.5; background: #f3f4f6; border: 1px solid #e5e7eb; text-decoration: line-through;'"
+                >
+                  <span style="display: inline-block; width: 14px; height: 14px; background: #16a34a; border-radius: 3px;"></span>
+                  <span style="color: #166534;">Gross Revenue</span>
+                </div>
+                <div 
+                  @click="dashboardShowDoorman = !dashboardShowDoorman" 
+                  style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 4px 12px; border-radius: 6px; transition: all 0.2s; user-select: none;"
+                  :style="dashboardShowDoorman ? 'background: #fffbeb; border: 1px solid #fde68a;' : 'opacity: 0.5; background: #f3f4f6; border: 1px solid #e5e7eb; text-decoration: line-through;'"
+                >
+                  <span style="display: inline-block; width: 14px; height: 14px; background: #d97706; border-radius: 3px;"></span>
+                  <span style="color: #92400e;">Doorman Payout</span>
+                </div>
+              </div>
+
+            </div>
+
+          </div>
+
+          <!-- Monthly Statistics Table Card -->
+          <div class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02); overflow-x: auto;">
+            <h3 style="font-size: 1rem; color: var(--primary); font-weight: 700; margin: 0 0 1.25rem 0; display: flex; align-items: center; gap: 0.5rem;">
+              <span class="material-icons-outlined" style="color: var(--primary);">grid_on</span>
+              Detailed Monthly Breakdown ({{ dashboardYear }})
+            </h3>
+            
+            <table style="width: 100%; border-collapse: collapse; min-width: 750px; font-size: 0.9rem; text-align: left;">
+              <thead>
+                <tr style="border-bottom: 2px solid #f3f4f6; color: #4b5563; font-weight: 700; background-color: #f9fafb;">
+                  <th style="padding: 12px;">Month</th>
+                  <th style="padding: 12px; text-align: center;">Occupancy Rate</th>
+                  <th style="padding: 12px; text-align: center;">Occupied Nights</th>
+                  <th style="padding: 12px; text-align: center;">Blocked Days</th>
+                  <th style="padding: 12px; text-align: right;">Gross Revenue</th>
+                  <th style="padding: 12px; text-align: right;">Doorman Commission</th>
+                  <th style="padding: 12px; text-align: center;">Bookings</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="m in dashboardStats.months" :key="m.monthIdx" style="border-bottom: 1px solid #f3f4f6; transition: background 0.15s;" class="hover-row">
+                  <td style="padding: 12px; font-weight: 700; color: var(--primary);">{{ m.monthName }}</td>
+                  <td style="padding: 12px; text-align: center; font-weight: 700;">
+                    <span :style="{ color: m.occupancyRate > 70 ? '#16a34a' : m.occupancyRate > 40 ? '#d97706' : '#ef4444' }">
+                      {{ m.occupancyRate.toFixed(1) }}%
+                    </span>
+                  </td>
+                  <td style="padding: 12px; text-align: center; color: #374151; font-weight: 600;">{{ m.occupiedDays }} days</td>
+                  <td style="padding: 12px; text-align: center; color: #64748b;">{{ m.blockedDays }} days</td>
+                  <td style="padding: 12px; text-align: right; font-weight: 700; color: #16a34a;">€{{ m.grossRevenue.toFixed(2) }}</td>
+                  <td style="padding: 12px; text-align: right; font-weight: 700; color: #d97706;">€{{ m.doormanEarnings.toFixed(2) }}</td>
+                  <td style="padding: 12px; text-align: center; color: #4b5563; font-weight: 600;">{{ m.bookingsCount }} res.</td>
+                </tr>
+              </tbody>
+              <tfoot style="font-weight: 800; border-top: 2px solid #cbd5e1; background-color: #f8fafc;">
+                <tr>
+                  <td style="padding: 12px; color: var(--primary);">Totals / Average</td>
+                  <td style="padding: 12px; text-align: center; color: #1d4ed8; font-size: 0.95rem;">{{ dashboardStats.avgOccupancy.toFixed(1) }}% (Avg)</td>
+                  <td style="padding: 12px; text-align: center; color: #374151;">{{ dashboardStats.totalOccupied }} days</td>
+                  <td style="padding: 12px; text-align: center; color: #64748b;">{{ dashboardStats.totalBlocked }} days</td>
+                  <td style="padding: 12px; text-align: right; color: #16a34a; font-size: 0.95rem;">€{{ dashboardStats.totalGross.toFixed(2) }}</td>
+                  <td style="padding: 12px; text-align: right; color: #d97706; font-size: 0.95rem;">€{{ dashboardStats.totalDoorman.toFixed(2) }}</td>
+                  <td style="padding: 12px; text-align: center; color: #4b5563;">{{ dashboardStats.totalBookings }} res.</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+        </div>
 
         <!-- Reservations List Full Page -->
         <div v-else-if="currentConciergeView === 'reservations-list'" class="concierge-dashboard">
@@ -5856,10 +6607,18 @@ watch(cleaningSelectedDate, () => {
                 </select>
               </div>
 
+              <!-- Block Calendar Checkbox -->
+              <div style="background-color: #f3f4f6; padding: 0.75rem 1rem; border-radius: 8px;">
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 0.9rem; color: var(--primary); cursor: pointer; margin: 0;">
+                  <input type="checkbox" v-model="bookingForm.is_block" style="width: 18px; height: 18px; cursor: pointer;" />
+                  Block Calendar (Owner / Maintenance Usage)
+                </label>
+              </div>
+
               <!-- Platform -->
-              <div>
+              <div v-if="!bookingForm.is_block">
                 <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Platform / Source</label>
-                <select v-model="bookingForm.platform" required style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; background: white; width: 100%;">
+                <select v-model="bookingForm.platform" :required="!bookingForm.is_block" style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; background: white; width: 100%;">
                   <option value="airbnb">Airbnb</option>
                   <option value="booking">Booking.com</option>
                   <option value="resaoff">Resaoff (Offline / Direct)</option>
@@ -5867,34 +6626,34 @@ watch(cleaningSelectedDate, () => {
               </div>
 
               <!-- Guest Name -->
-              <div>
+              <div v-if="!bookingForm.is_block">
                 <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Guest Name (First & Last)</label>
-                <input v-model="bookingForm.guest_name" type="text" required placeholder="e.g. John Doe" style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
+                <input v-model="bookingForm.guest_name" type="text" :required="!bookingForm.is_block" placeholder="e.g. John Doe" style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
               </div>
 
               <!-- Check-in / Check-out dates -->
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                 <div>
-                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Check-in Date</label>
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">{{ bookingForm.is_block ? 'Block Start Date' : 'Check-in Date' }}</label>
                   <input v-model="bookingForm.start_date" type="date" required style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
                 </div>
                 <div>
-                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Check-out Date</label>
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">{{ bookingForm.is_block ? 'Block End Date' : 'Check-out Date' }}</label>
                   <input v-model="bookingForm.end_date" type="date" required style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
                 </div>
               </div>
 
               <!-- Nights Stayed -->
               <div>
-                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Nights Stayed (Auto-calculated)</label>
-                <input :value="nightsCount + ' nights'" type="text" disabled style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; background-color: #f3f4f6; color: #374151; font-weight: 600; width: 100%;" />
+                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">{{ bookingForm.is_block ? 'Blocked Days (Auto-calculated)' : 'Nights Stayed (Auto-calculated)' }}</label>
+                <input :value="nightsCount + (bookingForm.is_block ? ' days' : ' nights')" type="text" disabled style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; background-color: #f3f4f6; color: #374151; font-weight: 600; width: 100%;" />
               </div>
 
               <!-- Financial Info -->
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+              <div v-if="!bookingForm.is_block" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                 <div>
                   <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Total Gross Price (€)</label>
-                  <input v-model.number="bookingForm.price" type="number" step="0.01" required placeholder="0.00" style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
+                  <input v-model.number="bookingForm.price" type="number" step="0.01" :required="!bookingForm.is_block" placeholder="0.00" style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
                 </div>
                 <div>
                   <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Platform Service Fee (€)</label>
@@ -5903,26 +6662,26 @@ watch(cleaningSelectedDate, () => {
               </div>
 
               <!-- Commission Rate -->
-              <div>
+              <div v-if="!bookingForm.is_block">
                 <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Doorman Commission Rate (%)</label>
-                <input v-model.number="bookingForm.commission_rate" type="number" step="0.1" required style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
+                <input v-model.number="bookingForm.commission_rate" type="number" step="0.1" :required="!bookingForm.is_block" style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
               </div>
 
               <!-- Notes -->
               <div>
-                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">Notes (Max 100 chars)</label>
-                <input v-model="bookingForm.notes" type="text" maxlength="100" placeholder="e.g. Special request, late check-in..." style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
+                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase; display: block; margin-bottom: 0.5rem;">{{ bookingForm.is_block ? 'Block Reason / Notes' : 'Notes (Max 100 chars)' }}</label>
+                <input v-model="bookingForm.notes" type="text" maxlength="100" placeholder="e.g. Owner stay, renovation, pipe repair..." style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb; border-radius: 10px; font-size: 0.95rem; width: 100%;" />
               </div>
 
               <!-- Live Payout Breakdown -->
-              <div style="background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #bae6fd; border-radius: 12px; padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem;">
+              <div v-if="!bookingForm.is_block" style="background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #bae6fd; border-radius: 12px; padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem;">
                 <h3 style="font-size: 0.8rem; font-weight: 800; text-transform: uppercase; color: #0369a1; margin: 0; border-bottom: 1px solid #bae6fd; padding-bottom: 0.5rem; letter-spacing: 0.05em;">
                   Live Payout Breakdown
                 </h3>
 
                 <div style="display: flex; justify-content: space-between; font-size: 0.9rem;">
                   <span style="color: #475569;">Nightly Rate (Avg):</span>
-                  <strong style="color: #0f172a;">€{{ payoutBreakdown.nightly }} / gece</strong>
+                  <strong style="color: #0f172a;">€{{ payoutBreakdown.nightly }} / night</strong>
                 </div>
 
                 <div style="display: flex; justify-content: space-between; font-size: 0.9rem;">
@@ -6067,10 +6826,11 @@ watch(cleaningSelectedDate, () => {
                     v-for="day in daysInActiveMonth" 
                     :key="day.getTime()" 
                     @click="handleDayCellClick(prop, day)"
+                    @mouseenter="handleDayCellMouseEnter(prop, day)"
                     class="timeline-cell day-col" 
                     :class="{ 'is-weekend': day.getDay() === 0 || day.getDay() === 6 }"
                     style="width: 45px; min-width: 45px; border-right: 1px solid #f3f4f6; position: relative; display: flex; align-items: center; justify-content: center; cursor: pointer;"
-                    :style="isToday(day) ? 'background-color: #eff6ff;' : 'background-color: white;'"
+                    :style="isCellSelected(prop, day) ? 'background-color: rgba(245, 158, 11, 0.3) !important; outline: 1px solid var(--accent); z-index: 5;' : (isToday(day) ? 'background-color: #eff6ff;' : 'background-color: white;')"
                   >
                     <!-- Booking pill bar overlay -->
                     <div 
@@ -6082,7 +6842,7 @@ watch(cleaningSelectedDate, () => {
                         'booking-end': state.isEnd
                       }"
                       :title="`${prop.title}: ${state.booking.summary}`"
-                      style="position: absolute; height: 36px; font-weight: 700; font-size: 0.65rem; display: flex; align-items: center; justify-content: flex-start; border-top: 1px solid rgba(255,255,255,0.2); border-bottom: 1px solid rgba(0,0,0,0.1); box-shadow: 0 1px 3px rgba(0,0,0,0.05);"
+                      style="position: absolute; top: 0; bottom: 0; margin-top: auto; margin-bottom: auto; height: 36px; font-weight: 700; font-size: 0.65rem; display: flex; align-items: center; justify-content: flex-start; border-top: 1px solid rgba(255,255,255,0.2); border-bottom: 1px solid rgba(0,0,0,0.1); box-shadow: 0 1px 3px rgba(0,0,0,0.05);"
                       :style="getBookingBarStyle(state.booking, state.isStart, state.isEnd, getBookingsForDay(prop, day))"
                     >
                       <!-- Display guest name / summary only on start or in center to avoid cluttering -->
@@ -6747,35 +7507,40 @@ watch(cleaningSelectedDate, () => {
                   <tbody>
                     <tr v-for="b in filteredConciergePropertyBookings" :key="b.id" style="border-bottom: 1px solid #f3f4f6; transition: background 0.2s; cursor: pointer;" @click="selectBookingForEdit(b)" class="hover-row">
                       <td style="padding: 10px;">
-                        <strong style="color: var(--primary); font-size: 0.9rem;">{{ b.guest_name || b.summary }}</strong>
+                        <strong style="color: var(--primary); font-size: 0.9rem;">{{ b.is_block ? 'Blocked Period' : (b.guest_name || b.summary) }}</strong>
                         <div v-if="b.notes" style="font-size: 0.76rem; color: #475569; margin-top: 0.15rem; font-style: italic; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" :title="b.notes">
-                          Note: {{ b.notes }}
+                          Reason: {{ b.notes }}
                         </div>
                         <div style="margin-top: 0.2rem;">
                           <span class="status-pill" :style="{
-                            backgroundColor: b.source === 'airbnb' ? '#fee2e2' : b.source === 'booking' ? '#dbeafe' : '#ffedd5',
-                            color: b.source === 'airbnb' ? '#991b1b' : b.source === 'booking' ? '#1e40af' : '#9a3412',
+                            backgroundColor: b.is_block ? '#e2e8f0' : (b.source === 'airbnb' ? '#fee2e2' : b.source === 'booking' ? '#dbeafe' : '#ffedd5'),
+                            color: b.is_block ? '#475569' : (b.source === 'airbnb' ? '#991b1b' : b.source === 'booking' ? '#1e40af' : '#9a3412'),
                             fontSize: '0.7rem',
                             padding: '2px 6px',
                             borderRadius: '4px',
                             fontWeight: '700'
                           }">
-                            {{ b.source === 'airbnb' ? 'Airbnb' : b.source === 'booking' ? 'Booking.com' : 'Resaoff' }}
+                            {{ b.is_block ? 'Blocked' : (b.source === 'airbnb' ? 'Airbnb' : b.source === 'booking' ? 'Booking.com' : 'Resaoff') }}
                           </span>
                         </div>
                       </td>
                       <td style="padding: 10px;">
                         <span style="font-weight: 600; color: #374151;">{{ formatDateToEU(b.start_date) }} - {{ formatDateToEU(b.end_date) }}</span>
                         <div style="font-size: 0.75rem; color: #6b7280; margin-top: 0.1rem;">
-                          {{ b.nights || 1 }} nights
+                          {{ b.nights || 1 }} {{ b.is_block ? 'days' : 'nights' }}
                         </div>
                       </td>
                       <td style="padding: 10px;">
-                        <div style="font-weight: 700; color: #16a34a;">Total: €{{ b.price || 0 }}</div>
-                        <div style="font-size: 0.75rem; color: #4b5563; margin-top: 0.15rem; display: flex; flex-direction: column; gap: 0.1rem;">
-                          <span>Owner: €{{ b.owner_payout || 0 }}</span>
-                          <span>Doorman ({{ b.commission_rate || 20 }}%): €{{ b.doorman_commission || 0 }}</span>
-                        </div>
+                        <template v-if="b.is_block">
+                          <span style="color: #64748b; font-size: 0.8rem; font-weight: 600;">Not available for rent</span>
+                        </template>
+                        <template v-else>
+                          <div style="font-weight: 700; color: #16a34a;">Total: €{{ b.price || 0 }}</div>
+                          <div style="font-size: 0.75rem; color: #4b5563; margin-top: 0.15rem; display: flex; flex-direction: column; gap: 0.1rem;">
+                            <span>Owner: €{{ b.owner_payout || 0 }}</span>
+                            <span>Doorman ({{ b.commission_rate || 20 }}%): €{{ b.doorman_commission || 0 }}</span>
+                          </div>
+                        </template>
                       </td>
                       <td style="padding: 10px; text-align: right;" @click.stop>
                         <button @click="deleteConciergeBookingInDetails(b.id)" class="delete-btn" style="padding: 4px 8px; font-size: 0.75rem; border-radius: 4px; display: inline-flex; align-items: center; gap: 0.25rem;">
@@ -6804,10 +7569,18 @@ watch(cleaningSelectedDate, () => {
               </div>
 
               <form @submit.prevent="saveAdvancedBooking" style="display: flex; flex-direction: column; gap: 1.25rem;">
+                <!-- Block Calendar Checkbox -->
+                <div style="background-color: #f3f4f6; padding: 0.6rem 1rem; border-radius: 8px;">
+                  <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 0.85rem; color: var(--primary); cursor: pointer; margin: 0;">
+                    <input type="checkbox" v-model="bookingForm.is_block" style="width: 16px; height: 16px; cursor: pointer;" />
+                    Block Calendar (Owner / Maintenance)
+                  </label>
+                </div>
+
                 <!-- Platform Select -->
-                <div class="filter-group">
+                <div v-if="!bookingForm.is_block" class="filter-group">
                   <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Platform / Source</label>
-                  <select v-model="bookingForm.platform" required style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background: white; width: 100%;">
+                  <select v-model="bookingForm.platform" :required="!bookingForm.is_block" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background: white; width: 100%;">
                     <option value="airbnb">Airbnb</option>
                     <option value="booking">Booking.com</option>
                     <option value="resaoff">Resaoff (Offline Direct)</option>
@@ -6815,34 +7588,34 @@ watch(cleaningSelectedDate, () => {
                 </div>
 
                 <!-- Guest Name -->
-                <div class="filter-group">
+                <div v-if="!bookingForm.is_block" class="filter-group">
                   <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Guest Name (First & Last)</label>
-                  <input v-model="bookingForm.guest_name" type="text" required placeholder="e.g. John Doe" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                  <input v-model="bookingForm.guest_name" type="text" :required="!bookingForm.is_block" placeholder="e.g. John Doe" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
                 </div>
 
                 <!-- Date grid -->
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                   <div class="filter-group">
-                    <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Check-in Date</label>
+                    <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">{{ bookingForm.is_block ? 'Block Start Date' : 'Check-in Date' }}</label>
                     <input v-model="bookingForm.start_date" type="date" required style="padding: 0.6rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
                   </div>
                   <div class="filter-group">
-                    <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Check-out Date</label>
+                    <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">{{ bookingForm.is_block ? 'Block End Date' : 'Check-out Date' }}</label>
                     <input v-model="bookingForm.end_date" type="date" required style="padding: 0.6rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
                   </div>
                 </div>
 
                 <!-- Nights (Auto-calculated) -->
                 <div class="filter-group">
-                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Nights Stayed (Auto-calculated)</label>
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">{{ bookingForm.is_block ? 'Blocked Days (Auto-calculated)' : 'Nights Stayed (Auto-calculated)' }}</label>
                   <input :value="nightsCount" type="text" disabled style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background-color: #f3f4f6; color: #4b5563; font-weight: 600; width: 100%;" />
                 </div>
 
                 <!-- Financial Inputs Grid -->
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div v-if="!bookingForm.is_block" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                   <div class="filter-group">
                     <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Total Gross Price (€)</label>
-                    <input v-model.number="bookingForm.price" type="number" step="0.01" required style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                    <input v-model.number="bookingForm.price" type="number" step="0.01" :required="!bookingForm.is_block" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
                   </div>
                   <div class="filter-group">
                     <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Platform Service Fee (€)</label>
@@ -6851,26 +7624,26 @@ watch(cleaningSelectedDate, () => {
                 </div>
 
                 <!-- Commission Rate -->
-                <div class="filter-group">
+                <div v-if="!bookingForm.is_block" class="filter-group">
                   <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Doorman Commission Rate (%)</label>
-                  <input v-model.number="bookingForm.commission_rate" type="number" step="0.1" required style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                  <input v-model.number="bookingForm.commission_rate" type="number" step="0.1" :required="!bookingForm.is_block" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
                 </div>
 
                 <!-- Notes (Max 100 characters) -->
                 <div class="filter-group">
-                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Notes (Max 100 chars)</label>
-                  <input v-model="bookingForm.notes" type="text" maxlength="100" placeholder="e.g. Late check-in, key details..." style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">{{ bookingForm.is_block ? 'Block Reason / Notes' : 'Notes (Max 100 chars)' }}</label>
+                  <input v-model="bookingForm.notes" type="text" maxlength="100" placeholder="e.g. Owner stay, renovation, pipe repair..." style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
                 </div>
 
                 <!-- Live calculations / Split Breakdown panel -->
-                <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.75rem;">
+                <div v-if="!bookingForm.is_block" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.75rem;">
                   <h3 style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; color: #64748b; margin: 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.25rem;">
                     Dynamic Payout Split
                   </h3>
 
                   <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
                     <span style="color: #475569;">Nightly Rate (Avg):</span>
-                    <strong style="color: #0f172a;">€{{ payoutBreakdown.nightly }} / gece</strong>
+                    <strong style="color: #0f172a;">€{{ payoutBreakdown.nightly }} / night</strong>
                   </div>
                   
                   <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
@@ -6896,6 +7669,7 @@ watch(cleaningSelectedDate, () => {
                 </button>
               </form>
             </div>
+
           </div>
         </div>
       </div>
@@ -7120,6 +7894,35 @@ watch(cleaningSelectedDate, () => {
     </div>
   </transition>
 
+  <!-- Calendar Selection Action Modal -->
+  <transition name="fade">
+    <div v-if="showCalendarSelectionModal" class="modal-overlay" @click.self="cancelCalendarSelection">
+      <div class="filter-modal" style="max-width: 400px; padding: 1.5rem; text-align: center; border-radius: 16px; background: white;">
+        <h3 style="margin-bottom: 0.5rem; color: var(--primary); font-weight: 700; font-size: 1.2rem;">Select Action</h3>
+        <p style="font-size: 0.9rem; color: #4b5563; margin-bottom: 1.5rem; line-height: 1.4;">
+          Property: <strong>{{ selectedPropertyTitle }}</strong><br />
+          Selected Dates: <strong style="color: var(--primary);">{{ formattedSelectionDates }}</strong>
+        </p>
+        <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+          <button @click="handleCalendarAction('block')" class="submit-btn" style="width: 100%; justify-content: center; background-color: #64748b; border-color: #64748b; font-weight: 700; padding: 0.75rem; border-radius: 8px;">
+            <span class="material-icons-outlined" style="margin-right: 0.5rem;">lock</span>
+            Block Calendar
+          </button>
+          <button @click="handleCalendarAction('unblock')" class="submit-btn" style="width: 100%; justify-content: center; background-color: #059669; border-color: #059669; font-weight: 700; padding: 0.75rem; border-radius: 8px;">
+            <span class="material-icons-outlined" style="margin-right: 0.5rem;">lock_open</span>
+            Open / Unblock
+          </button>
+          <button @click="handleCalendarAction('book')" class="submit-btn" style="width: 100%; justify-content: center; font-weight: 700; padding: 0.75rem; border-radius: 8px;">
+            <span class="material-icons-outlined" style="margin-right: 0.5rem;">add_circle_outline</span>
+            Add Reservation
+          </button>
+          <button @click="cancelCalendarSelection" class="cancel-btn" style="width: 100%; justify-content: center; border: 1px solid #d1d5db; padding: 0.75rem; border-radius: 8px; background: white; font-weight: 600; cursor: pointer;">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  </transition>
 
 </template>
 
@@ -7800,6 +8603,21 @@ watch(cleaningSelectedDate, () => {
   padding: 0.5rem;
   border: 1px solid var(--border-light);
   border-radius: 4px;
+  cursor: grab;
+  transition: transform 0.2s, box-shadow 0.2s, opacity 0.2s;
+  user-select: none;
+}
+
+.preview-item:active {
+  cursor: grabbing;
+}
+
+.preview-item.dragging {
+  cursor: grabbing;
+  opacity: 0.5;
+  transform: scale(0.95);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+  border: 2px dashed var(--accent);
 }
 
 .preview-item img {

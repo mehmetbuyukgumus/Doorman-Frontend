@@ -484,7 +484,6 @@ onUnmounted(() => {
   aspect-ratio: 16/10;
   overflow: hidden;
   border-radius: 4px;
-  background-color: var(--primary); /* Deep brand background to fill empty spaces nicely */
   display: flex;
   align-items: center;
   justify-content: center;
