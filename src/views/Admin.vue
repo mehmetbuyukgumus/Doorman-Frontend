@@ -5675,10 +5675,18 @@ watch(cleaningSelectedDate, () => {
           <button 
             @click="currentConciergeView = 'cleaning'" 
             class="action-header-btn" 
-            :style="currentConciergeView === 'cleaning' || currentConciergeView === 'cleaning-report' ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
+            :style="currentConciergeView === 'cleaning' ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
           >
             <span class="material-icons-outlined" style="margin-right: 0.25rem;">cleaning_services</span>
             Cleaning Schedule
+          </button>
+          <button 
+            @click="currentConciergeView = 'cleaning-report'; fetchReportCleaningAssignments(); fetchCleanerTransactions();" 
+            class="action-header-btn" 
+            :style="currentConciergeView === 'cleaning-report' ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
+          >
+            <span class="material-icons-outlined" style="margin-right: 0.25rem;">summarize</span>
+            Cleaning Report
           </button>
           <button 
             @click="currentConciergeView = 'reports-tracking'" 
