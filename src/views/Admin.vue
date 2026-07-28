@@ -690,7 +690,9 @@ const allReservations = computed(() => {
   let list = [];
   conciergeProperties.value.forEach(prop => {
     (prop.bookings || []).forEach(b => {
-      list.push({ ...b, propertyTitle: prop.title, propertyId: prop.id });
+      if (!b.is_block) {
+        list.push({ ...b, propertyTitle: prop.title, propertyId: prop.id });
+      }
     });
   });
 
@@ -739,7 +741,7 @@ const availableYears = computed(() => {
   const years = new Set();
   conciergeProperties.value.forEach(prop => {
     (prop.bookings || []).forEach(b => {
-      if (b.start_date) years.add(new Date(b.start_date).getFullYear());
+      if (!b.is_block && b.start_date) years.add(new Date(b.start_date).getFullYear());
     });
   });
   return Array.from(years).sort((a, b) => b - a);
@@ -1984,6 +1986,7 @@ const formatDateToEU = (dateVal) => {
 };
 
 const exportReservationsToExcel = (bookings, propertyTitle = null) => {
+  const reportBookings = (bookings || []).filter(b => !b.is_block);
   const rows = [];
   
   // Title / Branding Header
@@ -2010,7 +2013,7 @@ const exportReservationsToExcel = (bookings, propertyTitle = null) => {
   ]);
   
   // Data rows
-  bookings.forEach(b => {
+  reportBookings.forEach(b => {
     rows.push([
       b.propertyTitle || propertyTitle || "—",
       b.guest_name || b.summary || "—",
@@ -2028,10 +2031,10 @@ const exportReservationsToExcel = (bookings, propertyTitle = null) => {
   rows.push([]);
   
   // Totals Row
-  const totalGross = bookings.reduce((sum, b) => sum + parseFloat(b.price || 0), 0);
-  const totalDoorman = bookings.reduce((sum, b) => sum + parseFloat(b.doorman_commission || 0), 0);
-  const totalOwner = bookings.reduce((sum, b) => sum + parseFloat(b.owner_payout || 0), 0);
-  const totalNights = bookings.reduce((sum, b) => sum + (b.nights || 0), 0);
+  const totalGross = reportBookings.reduce((sum, b) => sum + parseFloat(b.price || 0), 0);
+  const totalDoorman = reportBookings.reduce((sum, b) => sum + parseFloat(b.doorman_commission || 0), 0);
+  const totalOwner = reportBookings.reduce((sum, b) => sum + parseFloat(b.owner_payout || 0), 0);
+  const totalNights = reportBookings.reduce((sum, b) => sum + (b.nights || 0), 0);
   
   rows.push([
     "TOTALS",
@@ -2139,7 +2142,7 @@ const conciergeReportTrackingRows = computed(() => {
     const periods = new Set();
     
     for (const b of prop.bookings) {
-      if (!b.start_date) continue;
+      if (b.is_block || !b.start_date) continue;
       const s = parseISODateLocal(b.start_date);
       const year = s.getFullYear();
       const month = s.getMonth();
@@ -2296,7 +2299,7 @@ const filteredPropertyDetailsBookings = computed(() => {
   const month = propertyDetailsFilterMonth.value;
 
   const list = selectedConciergeDetailsProperty.value.bookings.filter(b => {
-    if (!b.start_date) return false;
+    if (b.is_block || !b.start_date) return false;
     const d = parseISODateLocal(b.start_date);
     return d.getFullYear() === year && (d.getMonth() + 1) === month;
   });
@@ -2317,13 +2320,13 @@ const filteredConciergePropertyBookings = computed(() => {
     year = parseInt(emailReportPeriod.value.year);
     month = parseInt(emailReportPeriod.value.month); // 0-11
   } else if (filterType === 'all') {
-    return [...selectedConciergeDetailsProperty.value.bookings].sort(
+    return selectedConciergeDetailsProperty.value.bookings.filter(b => !b.is_block).sort(
       (a, b) => parseISODateLocal(a.start_date) - parseISODateLocal(b.start_date)
     );
   }
   
   const list = selectedConciergeDetailsProperty.value.bookings.filter(b => {
-    if (!b.start_date || !b.end_date) return false;
+    if (b.is_block || !b.start_date || !b.end_date) return false;
     const start = parseISODateLocal(b.start_date);
     const end = parseISODateLocal(b.end_date);
     const firstDay = new Date(year, month, 1);
@@ -2608,7 +2611,7 @@ const saveQuickBooking = async () => {
     end_date: bookingForm.value.end_date,
     guest_name: bookingForm.value.is_block ? "Blocked" : bookingForm.value.guest_name,
     price: bookingForm.value.is_block ? 0 : bookingForm.value.price,
-    platform: bookingForm.value.is_block ? "resaoff" : bookingForm.value.platform,
+    platform: bookingForm.value.is_block ? null : bookingForm.value.platform,
     platform_fee: bookingForm.value.is_block ? 0 : bookingForm.value.platform_fee,
     commission_rate: bookingForm.value.is_block ? 0 : bookingForm.value.commission_rate,
     is_block: !!bookingForm.value.is_block,
@@ -2657,7 +2660,7 @@ const saveAdvancedBooking = async () => {
     end_date: bookingForm.value.end_date,
     guest_name: bookingForm.value.is_block ? "Blocked" : bookingForm.value.guest_name,
     price: bookingForm.value.is_block ? 0 : bookingForm.value.price,
-    platform: bookingForm.value.is_block ? "resaoff" : bookingForm.value.platform,
+    platform: bookingForm.value.is_block ? null : bookingForm.value.platform,
     platform_fee: bookingForm.value.is_block ? 0 : bookingForm.value.platform_fee,
     commission_rate: bookingForm.value.is_block ? 0 : bookingForm.value.commission_rate,
     is_block: !!bookingForm.value.is_block,
