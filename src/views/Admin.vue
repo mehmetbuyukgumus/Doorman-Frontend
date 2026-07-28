@@ -286,6 +286,7 @@ const filteredCleaningAssignmentsList = computed(() => {
   const assignmentOtherExpenseMap = new Map();
   const assignmentMarketExpenseMap = new Map();
   const assignmentLaundryExpenseMap = new Map();
+  const assignmentAdvanceMap = new Map();
   const assignmentKey = (a) => `${a.cleaner_id}|${a.property_id}|${getYYYYMMDD(a.cleaning_date)}`;
   const monthlyKey = (a) => `${a.cleaner_id}|${a.property_id}`;
   const exactAssignmentKeys = new Set(assignments.map(assignmentKey));
@@ -303,16 +304,15 @@ const filteredCleaningAssignmentsList = computed(() => {
       const d = new Date(t.transaction_date);
       const matchesSelectedCleaner = !selectedCleanerId || t.cleaner_id === parseInt(selectedCleanerId);
       return (
-        ["expense", "market", "laundry"].includes(t.type) &&
-        t.property_id &&
+        ["expense", "market", "laundry", "advance"].includes(t.type) &&
         d.getFullYear() === year &&
         d.getMonth() + 1 === month &&
         matchesSelectedCleaner
       );
     })
     .forEach((t) => {
-      const exactKey = `${t.cleaner_id}|${t.property_id}|${getYYYYMMDD(t.transaction_date)}`;
-      const fallbackKey = firstMonthlyAssignment.get(`${t.cleaner_id}|${t.property_id}`);
+      const exactKey = `${t.cleaner_id}|${t.property_id || ''}|${getYYYYMMDD(t.transaction_date)}`;
+      const fallbackKey = firstMonthlyAssignment.get(`${t.cleaner_id}|${t.property_id || ''}`);
       const key = exactAssignmentKeys.has(exactKey) ? exactKey : fallbackKey;
       if (!key) return;
       
@@ -323,6 +323,8 @@ const filteredCleaningAssignmentsList = computed(() => {
         assignmentMarketExpenseMap.set(key, (assignmentMarketExpenseMap.get(key) || 0) + amt);
       } else if (t.type === "laundry") {
         assignmentLaundryExpenseMap.set(key, (assignmentLaundryExpenseMap.get(key) || 0) + amt);
+      } else if (t.type === "advance") {
+        assignmentAdvanceMap.set(key, (assignmentAdvanceMap.get(key) || 0) + amt);
       }
     });
 
@@ -347,6 +349,7 @@ const filteredCleaningAssignmentsList = computed(() => {
     const other_expense = assignmentOtherExpenseMap.get(assignmentKey(a)) || 0;
     const market_expense = assignmentMarketExpenseMap.get(assignmentKey(a)) || 0;
     const laundry_expense = assignmentLaundryExpenseMap.get(assignmentKey(a)) || 0;
+    const advance = assignmentAdvanceMap.get(assignmentKey(a)) || 0;
     const expenses_sum = other_expense + market_expense + laundry_expense;
     const total_cost = wage + expenses_sum;
 
@@ -364,6 +367,7 @@ const filteredCleaningAssignmentsList = computed(() => {
       other_expense,
       market_expense,
       laundry_expense,
+      advance,
       expenses_sum,
       airbnb_fee,
       total_cost,
@@ -554,10 +558,16 @@ const editAssignmentForm = ref({
   id: null,
   cleaner_id: "",
   property_id: "",
+  date: "",
   notes: "",
   hourly_rate: null,
   max_cleaning_duration: null,
-  airbnb_cleaning_fee: null
+  airbnb_cleaning_fee: null,
+  // Extra transactions to add alongside the assignment edit
+  market_amount: null,
+  laundry_amount: null,
+  advance_amount: null,
+  expense_description: ""
 });
 
 const startEditCleaningAssignment = (row) => {
@@ -565,10 +575,15 @@ const startEditCleaningAssignment = (row) => {
     id: row.id,
     cleaner_id: row.cleaner_id,
     property_id: row.property_id,
+    date: row.date,
     notes: row.notes || "",
     hourly_rate: row.rate,
     max_cleaning_duration: row.duration,
-    airbnb_cleaning_fee: row.airbnb_fee
+    airbnb_cleaning_fee: row.airbnb_fee,
+    market_amount: row.market_expense > 0 ? row.market_expense : null,
+    laundry_amount: row.laundry_expense > 0 ? row.laundry_expense : null,
+    advance_amount: row.advance > 0 ? row.advance : null,
+    expense_description: ""
   };
   showEditAssignmentModal.value = true;
 };
@@ -579,10 +594,12 @@ const saveEditedCleaningAssignment = async () => {
     return;
   }
   const token = localStorage.getItem("admin_token");
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
   try {
+    // 1. Save the core assignment fields
     const res = await fetch(`${backendUrl}/cleaning-assignments/${editAssignmentForm.value.id}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      headers,
       body: JSON.stringify({
         cleaner_id: parseInt(editAssignmentForm.value.cleaner_id),
         property_id: parseInt(editAssignmentForm.value.property_id),
@@ -592,14 +609,42 @@ const saveEditedCleaningAssignment = async () => {
         airbnb_cleaning_fee: parseFloat(editAssignmentForm.value.airbnb_cleaning_fee || 0)
       })
     });
-    if (res.ok) {
-      showEditAssignmentModal.value = false;
-      await fetchReportCleaningAssignments();
-      await fetchCleanerTransactions();
-    } else {
+    if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
       alert(`Failed to save changes: ${errData.detail || res.statusText}`);
+      return;
     }
+
+    // 2. Save optional extra transactions (market, laundry, advance)
+    const txDate = editAssignmentForm.value.date
+      ? new Date(editAssignmentForm.value.date).toISOString().slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
+    const cleanerId = parseInt(editAssignmentForm.value.cleaner_id);
+    const propertyId = parseInt(editAssignmentForm.value.property_id);
+    const desc = editAssignmentForm.value.expense_description?.trim() || null;
+
+    const extras = [];
+    if (editAssignmentForm.value.market_amount > 0) {
+      extras.push({ type: 'market', amount: parseFloat(editAssignmentForm.value.market_amount), cleaner_id: cleanerId, property_id: propertyId, transaction_date: txDate, description: desc });
+    }
+    if (editAssignmentForm.value.laundry_amount > 0) {
+      extras.push({ type: 'laundry', amount: parseFloat(editAssignmentForm.value.laundry_amount), cleaner_id: cleanerId, property_id: propertyId, transaction_date: txDate, description: desc });
+    }
+    if (editAssignmentForm.value.advance_amount > 0) {
+      extras.push({ type: 'advance', amount: parseFloat(editAssignmentForm.value.advance_amount), cleaner_id: cleanerId, property_id: propertyId, transaction_date: txDate, description: desc });
+    }
+
+    for (const tx of extras) {
+      await fetch(`${backendUrl}/cleaner-transactions/`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(tx)
+      });
+    }
+
+    showEditAssignmentModal.value = false;
+    await fetchReportCleaningAssignments();
+    await fetchCleanerTransactions();
   } catch (err) {
     console.error("Failed to update assignment", err);
     alert("Failed to save changes.");
@@ -7474,8 +7519,8 @@ watch(cleaningSelectedDate, () => {
                   <span class="material-icons-outlined" style="font-size: 1.15rem; color: #0284c7;">payments</span>
                   Payroll & Bookkeeping Summary
                 </h3>
-                <div style="border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);">
-                  <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+                <div style="border: 1px solid #e2e8f0; border-radius: 10px; overflow-x: auto; overflow-y: visible; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);">
+                  <table style="width: 100%; min-width: 900px; border-collapse: collapse; font-size: 0.875rem;">
                     <thead>
                       <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
                         <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Cleaner</th>
@@ -7559,102 +7604,100 @@ watch(cleaningSelectedDate, () => {
                   <span class="material-icons-outlined" style="font-size: 1.15rem; color: #0284c7;">list</span>
                   Detailed Cleaning Breakdown
                 </h3>
-                <div style="border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);">
-                  <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+                <div class="cleaning-report-table-wrap">
+                  <table class="cleaning-report-table" style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
                     <thead>
                       <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
-                        <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Date</th>
-                        <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Cleaner</th>
-                        <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Property</th>
-                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Duration</th>
-                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Hourly Rate</th>
-                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Wage</th>
-                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #2563eb; letter-spacing: 0.05em;">Other Exp</th>
-                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #059669; letter-spacing: 0.05em;">Market</th>
-                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #0d9488; letter-spacing: 0.05em;">Laundry</th>
-                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #0284c7; letter-spacing: 0.05em;">Airbnb Fee</th>
-                        <th style="padding: 0.75rem 1rem; text-align: right; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Total Cost</th>
-                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Actions</th>
+                        <th style="padding: 0.6rem 0.75rem; text-align: left; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; white-space: nowrap;">Date</th>
+                        <th style="padding: 0.6rem 0.75rem; text-align: left; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; white-space: nowrap;">Cleaner</th>
+                        <th style="padding: 0.6rem 0.75rem; text-align: left; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em;">Property</th>
+                        <th style="padding: 0.6rem 0.75rem; text-align: center; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; white-space: nowrap;">Duration</th>
+                        <th style="padding: 0.6rem 0.75rem; text-align: center; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; white-space: nowrap;">Rate</th>
+                        <th style="padding: 0.6rem 0.75rem; text-align: center; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; white-space: nowrap;">Wage</th>
+                        <th style="padding: 0.6rem 0.75rem; text-align: center; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #7c3aed; letter-spacing: 0.04em; white-space: nowrap;">Other</th>
+                        <th style="padding: 0.6rem 0.75rem; text-align: center; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #059669; letter-spacing: 0.04em; white-space: nowrap;">Market</th>
+                        <th style="padding: 0.6rem 0.75rem; text-align: center; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #0d9488; letter-spacing: 0.04em; white-space: nowrap;">Laundry</th>
+                        <th style="padding: 0.6rem 0.75rem; text-align: center; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #0284c7; letter-spacing: 0.04em; white-space: nowrap;">Airbnb Fee</th>
+                        <th style="padding: 0.6rem 0.75rem; text-align: right; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; white-space: nowrap;">Total</th>
+                        <th class="cleaning-report-actions-head" style="padding: 0.6rem 0.75rem; text-align: center; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; white-space: nowrap;">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       <tr v-for="(row, idx) in filteredCleaningAssignmentsList" :key="row.id" :style="{ background: idx % 2 === 0 ? '#fff' : '#fafafa' }" style="border-bottom: 1px solid #f1f5f9;">
-                        <td style="padding: 0.75rem 1rem; color: #374151; font-weight: 600;">
+                        <td style="padding: 0.6rem 0.75rem; color: #374151; font-weight: 600; white-space: nowrap; font-size: 0.82rem;">
                           {{ new Date(row.date).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) }}
                         </td>
-                        <td style="padding: 0.75rem 1rem; font-weight: 700; color: #1e293b;">
+                        <td style="padding: 0.6rem 0.75rem; font-weight: 700; color: #1e293b; white-space: nowrap; font-size: 0.85rem;">
                           {{ row.cleaner_name }}
                         </td>
-                        <td style="padding: 0.75rem 1rem;">
-                          <div style="font-weight: 600; color: var(--primary);">{{ row.property_title }}</div>
-                          <div v-if="row.property_address" style="font-size: 0.75rem; color: #64748b; margin-top: 0.1rem;">{{ row.property_address }}</div>
-                          <div v-if="row.notes" style="font-size: 0.75rem; color: #6b7280; font-style: italic; margin-top: 0.25rem; display: flex; align-items: center; gap: 0.25rem;">
-                            <span class="material-icons-outlined" style="font-size: 0.9rem; color: #94a3b8;">chat_bubble_outline</span>
+                        <td style="padding: 0.6rem 0.75rem; min-width: 130px;">
+                          <div style="font-weight: 600; color: var(--primary); font-size: 0.85rem;">{{ row.property_title }}</div>
+                          <div v-if="row.notes" style="font-size: 0.72rem; color: #6b7280; font-style: italic; margin-top: 0.15rem; display: flex; align-items: center; gap: 0.2rem;">
+                            <span class="material-icons-outlined" style="font-size: 0.8rem; color: #94a3b8;">chat_bubble_outline</span>
                             {{ row.notes }}
                           </div>
                         </td>
-                        <td style="padding: 0.75rem 1rem; text-align: center; color: #334155; font-weight: 500;">
-                          <span v-if="row.duration > 0">{{ row.duration }} hrs</span>
+                        <td style="padding: 0.6rem 0.75rem; text-align: center; color: #334155; font-weight: 500; font-size: 0.85rem; white-space: nowrap;">
+                          <span v-if="row.duration > 0">{{ row.duration }} h</span>
                           <span v-else style="color: #cbd5e1;">—</span>
                         </td>
-                        <td style="padding: 0.75rem 1rem; text-align: center; color: #374151; font-weight: 500;">
-                          <span v-if="row.rate > 0">€{{ row.rate.toFixed(2) }}/hr</span>
+                        <td style="padding: 0.6rem 0.75rem; text-align: center; color: #374151; font-weight: 500; font-size: 0.85rem; white-space: nowrap;">
+                          <span v-if="row.rate > 0">€{{ row.rate.toFixed(2) }}/h</span>
                           <span v-else style="color: #cbd5e1;">—</span>
                         </td>
-                        <td style="padding: 0.75rem 1rem; text-align: center; color: #374151; font-weight: 600;">
+                        <td style="padding: 0.6rem 0.75rem; text-align: center; color: #374151; font-weight: 600; font-size: 0.85rem; white-space: nowrap;">
                           €{{ row.wage.toFixed(2) }}
                         </td>
-                        <td style="padding: 0.75rem 1rem; text-align: center; color: #2563eb; font-weight: 600;">
+                        <td style="padding: 0.6rem 0.75rem; text-align: center; color: #7c3aed; font-weight: 600; font-size: 0.85rem; white-space: nowrap;">
                           <span v-if="row.other_expense > 0">€{{ row.other_expense.toFixed(2) }}</span>
                           <span v-else style="color: #cbd5e1;">—</span>
                         </td>
-                        <td style="padding: 0.75rem 1rem; text-align: center; color: #059669; font-weight: 600;">
+                        <td style="padding: 0.6rem 0.75rem; text-align: center; color: #059669; font-weight: 600; font-size: 0.85rem; white-space: nowrap;">
                           <span v-if="row.market_expense > 0">€{{ row.market_expense.toFixed(2) }}</span>
                           <span v-else style="color: #cbd5e1;">—</span>
                         </td>
-                        <td style="padding: 0.75rem 1rem; text-align: center; color: #0d9488; font-weight: 600;">
+                        <td style="padding: 0.6rem 0.75rem; text-align: center; color: #0d9488; font-weight: 600; font-size: 0.85rem; white-space: nowrap;">
                           <span v-if="row.laundry_expense > 0">€{{ row.laundry_expense.toFixed(2) }}</span>
                           <span v-else style="color: #cbd5e1;">—</span>
                         </td>
-                        <td style="padding: 0.75rem 1rem; text-align: center; color: #0284c7; font-weight: 600;">
+                        <td style="padding: 0.6rem 0.75rem; text-align: center; color: #0284c7; font-weight: 600; font-size: 0.85rem; white-space: nowrap;">
                           <span v-if="row.airbnb_fee > 0">€{{ row.airbnb_fee.toFixed(2) }}</span>
                           <span v-else style="color: #cbd5e1;">—</span>
                         </td>
-                        <td style="padding: 0.75rem 1rem; text-align: right; font-weight: 800;" :style="{ color: row.total_cost > 0 ? (row.total_cost > row.airbnb_fee ? '#dc2626' : '#059669') : '#94a3b8' }">
+                        <td style="padding: 0.6rem 0.75rem; text-align: right; font-weight: 800; font-size: 0.85rem; white-space: nowrap;" :style="{ color: row.total_cost > 0 ? (row.total_cost > row.airbnb_fee ? '#dc2626' : '#059669') : '#94a3b8' }">
                           <span v-if="row.total_cost > 0">€{{ row.total_cost.toFixed(2) }}</span>
                           <span v-else style="font-size: 0.78rem; color: #cbd5e1;">N/A</span>
                         </td>
-                        <td style="padding: 0.75rem 1rem; text-align: center;">
-                          <button @click="startEditCleaningAssignment(row)" class="edit-btn" style="padding: 4px 8px; font-size: 0.75rem; border-radius: 4px; display: inline-flex; align-items: center; gap: 0.25rem;">
-                            <span class="material-icons-outlined" style="font-size: 0.85rem;">edit</span>
-                            Edit
+                        <td class="cleaning-report-actions-cell">
+                          <button @click="startEditCleaningAssignment(row)" class="edit-btn cleaning-report-edit-btn" title="Edit" aria-label="Edit cleaning assignment">
+                            <span class="material-icons-outlined">edit</span>
                           </button>
                         </td>
                       </tr>
                     </tbody>
                     <tfoot>
                       <tr style="background: #f8fafc; font-weight: 800; border-top: 1px solid #cbd5e1;">
-                        <td colspan="3" style="padding: 0.85rem 1rem; color: #334155;">Total for current view</td>
-                        <td style="padding: 0.85rem 1rem; text-align: center; color: #334155;">
-                          {{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.duration, 0) }} hrs
+                        <td colspan="3" style="padding: 0.7rem 0.75rem; color: #334155; font-size: 0.82rem;">Total for current view</td>
+                        <td style="padding: 0.7rem 0.75rem; text-align: center; color: #334155; font-size: 0.82rem;">
+                          {{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.duration, 0) }} h
                         </td>
                         <td></td>
-                        <td style="padding: 0.85rem 1rem; text-align: center; color: #334155;">
+                        <td style="padding: 0.7rem 0.75rem; text-align: center; color: #334155; font-size: 0.82rem;">
                           €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.wage, 0).toFixed(2) }}
                         </td>
-                        <td style="padding: 0.85rem 1rem; text-align: center; color: #2563eb;">
+                        <td style="padding: 0.7rem 0.75rem; text-align: center; color: #7c3aed; font-size: 0.82rem;">
                           €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.other_expense, 0).toFixed(2) }}
                         </td>
-                        <td style="padding: 0.85rem 1rem; text-align: center; color: #059669;">
+                        <td style="padding: 0.7rem 0.75rem; text-align: center; color: #059669; font-size: 0.82rem;">
                           €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.market_expense, 0).toFixed(2) }}
                         </td>
-                        <td style="padding: 0.85rem 1rem; text-align: center; color: #0d9488;">
+                        <td style="padding: 0.7rem 0.75rem; text-align: center; color: #0d9488; font-size: 0.82rem;">
                           €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.laundry_expense, 0).toFixed(2) }}
                         </td>
-                        <td style="padding: 0.85rem 1rem; text-align: center; color: #0284c7;">
+                        <td style="padding: 0.7rem 0.75rem; text-align: center; color: #0284c7; font-size: 0.82rem;">
                           €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.airbnb_fee, 0).toFixed(2) }}
                         </td>
-                        <td style="padding: 0.85rem 1rem; text-align: right; color: #059669; font-size: 1.05rem;">
+                        <td style="padding: 0.7rem 0.75rem; text-align: right; color: #059669; font-size: 0.95rem;">
                           €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.total_cost, 0).toFixed(2) }}
                         </td>
                         <td></td>
@@ -7748,8 +7791,10 @@ watch(cleaningSelectedDate, () => {
                   </div>
                   
                   <!-- Modal Content -->
-                  <div style="padding: 1.5rem;">
+                  <div style="padding: 1.5rem; max-height: 80vh; overflow-y: auto;">
                     <form @submit.prevent="saveEditedCleaningAssignment" style="display: flex; flex-direction: column; gap: 1rem;">
+
+                      <!-- Core Assignment Fields -->
                       <div>
                         <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Select Cleaner *</label>
                         <select v-model="editAssignmentForm.cleaner_id" required style="padding: 0.65rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%; background: #fff; font-weight: 600;">
@@ -7775,6 +7820,44 @@ watch(cleaningSelectedDate, () => {
                       <div>
                         <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Notes</label>
                         <input v-model="editAssignmentForm.notes" type="text" placeholder="Add optional details..." style="padding: 0.65rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                      </div>
+
+                      <!-- Expense / Advance Section -->
+                      <div style="border-top: 1.5px dashed #e2e8f0; padding-top: 1rem; margin-top: 0.25rem;">
+                        <p style="font-size: 0.75rem; font-weight: 800; text-transform: uppercase; color: #475569; margin: 0 0 0.75rem 0; display: flex; align-items: center; gap: 0.4rem;">
+                          <span class="material-icons-outlined" style="font-size: 1rem; color: #0284c7;">receipt_long</span>
+                          Expenses &amp; Advance (will be saved as transactions)
+                        </p>
+
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+                          <div>
+                            <label style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #059669; display: block; margin-bottom: 0.3rem;">
+                              <span class="material-icons-outlined" style="font-size: 0.85rem; vertical-align: middle;">shopping_cart</span>
+                              Market (€)
+                            </label>
+                            <input v-model.number="editAssignmentForm.market_amount" type="number" min="0" step="0.01" placeholder="0.00" style="padding: 0.6rem; border: 1px solid #bbf7d0; border-radius: 8px; font-size: 0.9rem; width: 100%; background: #f0fdf4;" />
+                          </div>
+                          <div>
+                            <label style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #0d9488; display: block; margin-bottom: 0.3rem;">
+                              <span class="material-icons-outlined" style="font-size: 0.85rem; vertical-align: middle;">local_laundry_service</span>
+                              Laundry (€)
+                            </label>
+                            <input v-model.number="editAssignmentForm.laundry_amount" type="number" min="0" step="0.01" placeholder="0.00" style="padding: 0.6rem; border: 1px solid #99f6e4; border-radius: 8px; font-size: 0.9rem; width: 100%; background: #f0fdfa;" />
+                          </div>
+                        </div>
+
+                        <div style="margin-top: 0.75rem;">
+                          <label style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #dc2626; display: block; margin-bottom: 0.3rem;">
+                            <span class="material-icons-outlined" style="font-size: 0.85rem; vertical-align: middle;">payments</span>
+                            Advance Paid (€)
+                          </label>
+                          <input v-model.number="editAssignmentForm.advance_amount" type="number" min="0" step="0.01" placeholder="0.00" style="padding: 0.6rem; border: 1px solid #fecaca; border-radius: 8px; font-size: 0.9rem; width: 100%; background: #fff5f5;" />
+                        </div>
+
+                        <div style="margin-top: 0.75rem;">
+                          <label style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.3rem;">Description / Note (applies to all above)</label>
+                          <input v-model="editAssignmentForm.expense_description" type="text" placeholder="e.g. Detergent, advance for transport..." style="padding: 0.6rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.85rem; width: 100%;" />
+                        </div>
                       </div>
 
                       <button type="submit" class="submit-btn" style="width: 100%; justify-content: center; padding: 0.75rem; margin-top: 0.5rem; font-weight: 700; background-color: #0284c7; border-color: #0284c7;">
@@ -9467,6 +9550,51 @@ watch(cleaningSelectedDate, () => {
   font-weight: 700;
   cursor: pointer;
   border-radius: 4px;
+}
+
+.cleaning-report-table-wrap {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.cleaning-report-table {
+  min-width: 1120px;
+}
+
+.cleaning-report-actions-head,
+.cleaning-report-actions-cell {
+  width: 72px;
+  min-width: 72px;
+}
+
+.cleaning-report-actions-cell {
+  padding: 0.6rem 1rem 0.6rem 0.5rem;
+  text-align: center;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.cleaning-report-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  font-size: 0.75rem;
+  line-height: 1;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.cleaning-report-edit-btn .material-icons-outlined {
+  font-size: 0.95rem;
+  line-height: 1;
 }
 
 .cancel-btn {
