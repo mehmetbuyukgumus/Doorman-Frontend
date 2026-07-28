@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, onMounted, computed, watch, nextTick } from "vue";
+import { ref, reactive, onMounted, onBeforeUnmount, computed, watch, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import { QuillEditor } from "@vueup/vue-quill";
@@ -49,6 +49,8 @@ const reportsCurrentPage = ref(1);
 
 const showConciergeDetailsModal = ref(false);
 const selectedConciergeDetailsProperty = ref(null);
+const propertyDetailsTab = ref('calendar'); // 'calendar', 'bookings', 'reservation-form'
+const overlappingBookingsToOverwrite = ref([]);
 const propertyDetailsFilterYear = ref(new Date().getFullYear());
 const propertyDetailsFilterMonth = ref(new Date().getMonth() + 1);
 const showBookingModal = ref(false);
@@ -230,7 +232,10 @@ const cleanerSalarySummary = computed(() => {
       wage += duration * aRate;
     }
 
-    const expenses = transactions.filter(t => t.type === "expense").reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+    const otherExpenses = transactions.filter(t => t.type === "expense").reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+    const marketExpenses = transactions.filter(t => t.type === "market").reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+    const laundryExpenses = transactions.filter(t => t.type === "laundry").reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+    const expenses = otherExpenses + marketExpenses + laundryExpenses;
     const advances = transactions.filter(t => t.type === "advance").reduce((s, t) => s + parseFloat(t.amount || 0), 0);
     const netPayout = wage + expenses - advances;
 
@@ -240,6 +245,9 @@ const cleanerSalarySummary = computed(() => {
       totalHours,
       rate: parseFloat(cleaner.hourly_rate || 0),
       wage,
+      otherExpenses,
+      marketExpenses,
+      laundryExpenses,
       expenses,
       advances,
       netPayout,
@@ -275,7 +283,9 @@ const filteredCleaningAssignmentsList = computed(() => {
     return `${y}-${m}-${day}`;
   };
 
-  const assignmentExpenseMap = new Map();
+  const assignmentOtherExpenseMap = new Map();
+  const assignmentMarketExpenseMap = new Map();
+  const assignmentLaundryExpenseMap = new Map();
   const assignmentKey = (a) => `${a.cleaner_id}|${a.property_id}|${getYYYYMMDD(a.cleaning_date)}`;
   const monthlyKey = (a) => `${a.cleaner_id}|${a.property_id}`;
   const exactAssignmentKeys = new Set(assignments.map(assignmentKey));
@@ -293,7 +303,7 @@ const filteredCleaningAssignmentsList = computed(() => {
       const d = new Date(t.transaction_date);
       const matchesSelectedCleaner = !selectedCleanerId || t.cleaner_id === parseInt(selectedCleanerId);
       return (
-        t.type === "expense" &&
+        ["expense", "market", "laundry"].includes(t.type) &&
         t.property_id &&
         d.getFullYear() === year &&
         d.getMonth() + 1 === month &&
@@ -305,10 +315,15 @@ const filteredCleaningAssignmentsList = computed(() => {
       const fallbackKey = firstMonthlyAssignment.get(`${t.cleaner_id}|${t.property_id}`);
       const key = exactAssignmentKeys.has(exactKey) ? exactKey : fallbackKey;
       if (!key) return;
-      assignmentExpenseMap.set(
-        key,
-        (assignmentExpenseMap.get(key) || 0) + parseFloat(t.amount || 0),
-      );
+      
+      const amt = parseFloat(t.amount || 0);
+      if (t.type === "expense") {
+        assignmentOtherExpenseMap.set(key, (assignmentOtherExpenseMap.get(key) || 0) + amt);
+      } else if (t.type === "market") {
+        assignmentMarketExpenseMap.set(key, (assignmentMarketExpenseMap.get(key) || 0) + amt);
+      } else if (t.type === "laundry") {
+        assignmentLaundryExpenseMap.set(key, (assignmentLaundryExpenseMap.get(key) || 0) + amt);
+      }
     });
 
   return assignments.map(a => {
@@ -329,18 +344,26 @@ const filteredCleaningAssignmentsList = computed(() => {
       ? parseFloat(a.airbnb_cleaning_fee) 
       : parseFloat(prop?.airbnb_cleaning_fee || 0);
 
-    const expenses_sum = assignmentExpenseMap.get(assignmentKey(a)) || 0;
+    const other_expense = assignmentOtherExpenseMap.get(assignmentKey(a)) || 0;
+    const market_expense = assignmentMarketExpenseMap.get(assignmentKey(a)) || 0;
+    const laundry_expense = assignmentLaundryExpenseMap.get(assignmentKey(a)) || 0;
+    const expenses_sum = other_expense + market_expense + laundry_expense;
     const total_cost = wage + expenses_sum;
 
     return {
       id: a.id,
       date: a.cleaning_date,
+      cleaner_id: a.cleaner_id,
+      property_id: a.property_id,
       cleaner_name: cleaner?.name || '—',
       property_title: prop?.title || '—',
       property_address: prop?.address || '',
       duration,
       rate,
       wage,
+      other_expense,
+      market_expense,
+      laundry_expense,
       expenses_sum,
       airbnb_fee,
       total_cost,
@@ -357,7 +380,7 @@ const filteredTransactionsList = computed(() => {
 
   let txs = cleanerTransactions.value.filter(t => {
     const d = new Date(t.transaction_date);
-    return d.getFullYear() === year && (d.getMonth() + 1) === month;
+    return t.type !== 'payment' && d.getFullYear() === year && (d.getMonth() + 1) === month;
   });
 
   if (selectedCleanerId) {
@@ -378,6 +401,210 @@ const filteredTransactionsList = computed(() => {
   });
 });
 
+// Cleaner cumulative balance and payment tracking
+const showAddPaymentModal = ref(false);
+const paymentFilterCleanerId = ref("");
+const paymentFilterYear = ref("all");
+const paymentFilterMonth = ref("all");
+
+const paymentForm = ref({
+  cleaner_id: "",
+  amount: null,
+  transaction_date: new Date().toISOString().slice(0, 10),
+  description: "Bank Transfer",
+  notes: ""
+});
+
+const cleanerCumulativeBalances = computed(() => {
+  return cleaners.value.map(cleaner => {
+    // 1. All assignments
+    const assignments = reportCleaningAssignments.value.filter(a => a.cleaner_id === cleaner.id);
+    let totalWages = 0;
+    for (const a of assignments) {
+      const prop = conciergeProperties.value.find(p => p.id === a.property_id);
+      const duration = a.max_cleaning_duration !== null && a.max_cleaning_duration !== undefined 
+        ? parseFloat(a.max_cleaning_duration) 
+        : parseFloat(prop?.max_cleaning_duration || 0);
+      const aRate = a.hourly_rate !== null && a.hourly_rate !== undefined 
+        ? parseFloat(a.hourly_rate) 
+        : parseFloat(cleaner.hourly_rate || 0);
+      totalWages += duration * aRate;
+    }
+
+    // 2. All transactions
+    const transactions = cleanerTransactions.value.filter(t => t.cleaner_id === cleaner.id);
+    const totalExpenses = transactions.filter(t => ['expense', 'market', 'laundry'].includes(t.type)).reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+    const totalAdvances = transactions.filter(t => t.type === 'advance').reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+    const totalPaid = transactions.filter(t => t.type === 'payment').reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+    
+    const accumulatedBalance = totalWages + totalExpenses - totalAdvances - totalPaid;
+
+    return {
+      cleaner,
+      totalWages,
+      totalExpenses,
+      totalAdvances,
+      totalPaid,
+      accumulatedBalance
+    };
+  });
+});
+
+const filteredPaymentsHistory = computed(() => {
+  let txs = cleanerTransactions.value.filter(t => t.type === 'payment');
+  
+  if (paymentFilterCleanerId.value) {
+    txs = txs.filter(t => t.cleaner_id === parseInt(paymentFilterCleanerId.value));
+  }
+  
+  if (paymentFilterYear.value !== 'all') {
+    txs = txs.filter(t => new Date(t.transaction_date).getFullYear() === parseInt(paymentFilterYear.value));
+  }
+  
+  if (paymentFilterMonth.value !== 'all') {
+    txs = txs.filter(t => new Date(t.transaction_date).getMonth() === parseInt(paymentFilterMonth.value));
+  }
+  
+  // Sort payments by date descending (newest payments first)
+  return txs.sort((a, b) => new Date(b.transaction_date) - new Date(a.transaction_date));
+});
+
+const isEditingPayment = ref(false);
+const editingPaymentId = ref(null);
+
+const startEditPayment = (payment) => {
+  const parts = payment.description.split(' - ');
+  const method = ['Bank Transfer', 'Cash Payment'].includes(parts[0]) ? parts[0] : 'Bank Transfer';
+  const notes = parts.slice(1).join(' - ');
+
+  paymentForm.value = {
+    cleaner_id: payment.cleaner_id,
+    amount: parseFloat(payment.amount),
+    transaction_date: payment.transaction_date,
+    description: method,
+    notes: notes
+  };
+  editingPaymentId.value = payment.id;
+  isEditingPayment.value = true;
+  showAddPaymentModal.value = true;
+};
+
+const cancelAddPayment = () => {
+  paymentForm.value = {
+    cleaner_id: "",
+    amount: null,
+    transaction_date: new Date().toISOString().slice(0, 10),
+    description: "Bank Transfer",
+    notes: ""
+  };
+  isEditingPayment.value = false;
+  editingPaymentId.value = null;
+  showAddPaymentModal.value = false;
+};
+
+const addCleanerPayment = async () => {
+  if (!paymentForm.value.cleaner_id || !paymentForm.value.amount || !paymentForm.value.transaction_date) {
+    alert("Please fill all required fields.");
+    return;
+  }
+  const token = localStorage.getItem("admin_token");
+  const url = isEditingPayment.value 
+    ? `${backendUrl}/cleaner-transactions/${editingPaymentId.value}`
+    : `${backendUrl}/cleaner-transactions/`;
+  const method = isEditingPayment.value ? "PUT" : "POST";
+
+  try {
+    const res = await fetch(url, {
+      method: method,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        cleaner_id: parseInt(paymentForm.value.cleaner_id),
+        property_id: null,
+        amount: parseFloat(paymentForm.value.amount),
+        type: "payment",
+        transaction_date: paymentForm.value.transaction_date,
+        description: `${paymentForm.value.description}${paymentForm.value.notes ? ' - ' + paymentForm.value.notes.trim() : ''}`
+      })
+    });
+    if (res.ok) {
+      paymentForm.value = {
+        cleaner_id: "",
+        amount: null,
+        transaction_date: new Date().toISOString().slice(0, 10),
+        description: "Bank Transfer",
+        notes: ""
+      };
+      isEditingPayment.value = false;
+      editingPaymentId.value = null;
+      showAddPaymentModal.value = false;
+      await fetchCleanerTransactions();
+    } else {
+      const errData = await res.json().catch(() => ({}));
+      alert(`Failed to save payment: ${errData.detail || res.statusText}`);
+    }
+  } catch (err) {
+    console.error("Failed to save payment", err);
+    alert("Failed to save payment.");
+  }
+};
+
+// Edit cleaning assignment state and methods
+const showEditAssignmentModal = ref(false);
+const editAssignmentForm = ref({
+  id: null,
+  cleaner_id: "",
+  property_id: "",
+  notes: "",
+  hourly_rate: null,
+  max_cleaning_duration: null,
+  airbnb_cleaning_fee: null
+});
+
+const startEditCleaningAssignment = (row) => {
+  editAssignmentForm.value = {
+    id: row.id,
+    cleaner_id: row.cleaner_id,
+    property_id: row.property_id,
+    notes: row.notes || "",
+    hourly_rate: row.rate,
+    max_cleaning_duration: row.duration,
+    airbnb_cleaning_fee: row.airbnb_fee
+  };
+  showEditAssignmentModal.value = true;
+};
+
+const saveEditedCleaningAssignment = async () => {
+  if (!editAssignmentForm.value.id || editAssignmentForm.value.max_cleaning_duration === null || editAssignmentForm.value.max_cleaning_duration === undefined) {
+    alert("Please enter a valid cleaning duration.");
+    return;
+  }
+  const token = localStorage.getItem("admin_token");
+  try {
+    const res = await fetch(`${backendUrl}/cleaning-assignments/${editAssignmentForm.value.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        cleaner_id: parseInt(editAssignmentForm.value.cleaner_id),
+        property_id: parseInt(editAssignmentForm.value.property_id),
+        notes: editAssignmentForm.value.notes ? editAssignmentForm.value.notes.trim() : null,
+        hourly_rate: parseFloat(editAssignmentForm.value.hourly_rate || 0),
+        max_cleaning_duration: parseFloat(editAssignmentForm.value.max_cleaning_duration),
+        airbnb_cleaning_fee: parseFloat(editAssignmentForm.value.airbnb_cleaning_fee || 0)
+      })
+    });
+    if (res.ok) {
+      showEditAssignmentModal.value = false;
+      await fetchReportCleaningAssignments();
+      await fetchCleanerTransactions();
+    } else {
+      const errData = await res.json().catch(() => ({}));
+      alert(`Failed to save changes: ${errData.detail || res.statusText}`);
+    }
+  } catch (err) {
+    console.error("Failed to update assignment", err);
+    alert("Failed to save changes.");
+  }
+};
 
 const nightsCount = computed(() => {
   if (!bookingForm.value.start_date || !bookingForm.value.end_date) return 0;
@@ -2272,16 +2499,15 @@ const updateBookingDetails = async () => {
     alert("Network error.");
   }
 };
-
 const openPropertyFullPage = (prop) => {
   selectedConciergeDetailsProperty.value = prop;
   emailReportPeriod.value.type = 'custom';
   emailReportPeriod.value.year = currentYear.value;
   emailReportPeriod.value.month = currentMonth.value;
   currentConciergeView.value = 'property-details';
+  propertyDetailsTab.value = 'calendar';
   resetBookingForm();
 };
-
 const selectBookingForEdit = (b) => {
   bookingForm.value = {
     id: b.id,
@@ -2295,6 +2521,8 @@ const selectBookingForEdit = (b) => {
     notes: b.notes || "",
     is_block: !!b.is_block
   };
+  propertyDetailsTab.value = 'reservation-form';
+  overlappingBookingsToOverwrite.value = [];
 };
 
 const resetBookingForm = () => {
@@ -2311,8 +2539,8 @@ const resetBookingForm = () => {
     is_block: false
   };
   quickBookingPropertyId.value = null;
+  overlappingBookingsToOverwrite.value = [];
 };
-
 const openQuickBooking = () => {
   resetBookingForm();
   if (conciergeProperties.value.length === 0) {
@@ -2322,7 +2550,6 @@ const openQuickBooking = () => {
   quickBookingPropertyId.value = conciergeProperties.value[0].id;
   currentConciergeView.value = 'add-reservation';
 };
-
 const saveQuickBooking = async () => {
   if (!quickBookingPropertyId.value) {
     alert("Please select a property first.");
@@ -2344,6 +2571,12 @@ const saveQuickBooking = async () => {
   };
   
   try {
+    if (overlappingBookingsToOverwrite.value.length > 0) {
+      for (const bId of overlappingBookingsToOverwrite.value) {
+        await deleteConciergeBookingSilent(bId);
+      }
+      overlappingBookingsToOverwrite.value = [];
+    }
     const res = await fetch(`${backendUrl}/concierge/${propId}/bookings`, {
       method: "POST",
       headers: {
@@ -2365,7 +2598,6 @@ const saveQuickBooking = async () => {
     alert("Network error.");
   }
 };
-
 const saveAdvancedBooking = async () => {
   const token = localStorage.getItem("admin_token");
   const propId = selectedConciergeDetailsProperty.value.id;
@@ -2388,6 +2620,12 @@ const saveAdvancedBooking = async () => {
   };
   
   try {
+    if (overlappingBookingsToOverwrite.value.length > 0) {
+      for (const bId of overlappingBookingsToOverwrite.value) {
+        await deleteConciergeBookingSilent(bId);
+      }
+      overlappingBookingsToOverwrite.value = [];
+    }
     const res = await fetch(url, {
       method: method,
       headers: {
@@ -2401,6 +2639,7 @@ const saveAdvancedBooking = async () => {
       selectedConciergeDetailsProperty.value = conciergeProperties.value.find(p => p.id === propId);
       alert(isEdit ? "Reservation updated successfully!" : "Reservation added successfully!");
       resetBookingForm();
+      propertyDetailsTab.value = 'calendar';
     } else {
       const err = await res.json();
       alert(`Error: ${err.detail}`);
@@ -2539,6 +2778,17 @@ const handleCalendarAction = async (action) => {
   const propId = state.propertyId;
 
   if (action === 'block') {
+    const overlaps = checkConciergeOverlap(propId, startDateStr, endDateStr);
+    if (overlaps.length > 0) {
+      if (!confirm("You are making a change on a day that is not empty in the calendar. Are you sure?")) {
+        cancelCalendarSelection();
+        return;
+      }
+      overlappingBookingsToOverwrite.value = overlaps.map(o => o.id);
+    } else {
+      overlappingBookingsToOverwrite.value = [];
+    }
+
     const payload = {
       start_date: startDateStr,
       end_date: endDateStr,
@@ -2552,6 +2802,12 @@ const handleCalendarAction = async (action) => {
     };
 
     try {
+      if (overlappingBookingsToOverwrite.value.length > 0) {
+        for (const bId of overlappingBookingsToOverwrite.value) {
+          await deleteConciergeBookingSilent(bId);
+        }
+        overlappingBookingsToOverwrite.value = [];
+      }
       const res = await fetch(`${backendUrl}/concierge/${propId}/bookings`, {
         method: "POST",
         headers: {
@@ -2562,6 +2818,9 @@ const handleCalendarAction = async (action) => {
       });
       if (res.ok) {
         await fetchConciergeProperties();
+        if (currentConciergeView.value === 'property-details') {
+          selectedConciergeDetailsProperty.value = conciergeProperties.value.find(p => p.id === propId);
+        }
         alert("Calendar range successfully blocked!");
       } else {
         const err = await res.json();
@@ -2582,6 +2841,9 @@ const handleCalendarAction = async (action) => {
       });
       if (res.ok) {
         await fetchConciergeProperties();
+        if (currentConciergeView.value === 'property-details') {
+          selectedConciergeDetailsProperty.value = conciergeProperties.value.find(p => p.id === propId);
+        }
         alert("Calendar range successfully opened!");
       } else {
         const err = await res.json();
@@ -2592,8 +2854,23 @@ const handleCalendarAction = async (action) => {
     }
     cancelCalendarSelection();
   } else if (action === 'book') {
-    currentConciergeView.value = 'add-reservation';
-    quickBookingPropertyId.value = propId;
+    const overlaps = checkConciergeOverlap(propId, startDateStr, endDateStr);
+    if (overlaps.length > 0) {
+      if (!confirm("You are making a change on a day that is not empty in the calendar. Are you sure?")) {
+        cancelCalendarSelection();
+        return;
+      }
+      overlappingBookingsToOverwrite.value = overlaps.map(o => o.id);
+    } else {
+      overlappingBookingsToOverwrite.value = [];
+    }
+
+    if (currentConciergeView.value === 'property-details') {
+      propertyDetailsTab.value = 'reservation-form';
+    } else {
+      currentConciergeView.value = 'add-reservation';
+      quickBookingPropertyId.value = propId;
+    }
     bookingForm.value = {
       id: null,
       start_date: startDateStr,
@@ -3518,6 +3795,142 @@ const deleteResearchTag = async (id) => {
   }
 };
 
+// Timeline Property Filter State
+const selectedTimelineProperties = ref([]);
+const timelinePropertySearch = ref('');
+const showTimelinePropertyDropdown = ref(false);
+
+const filteredTimelinePropertiesDropdown = computed(() => {
+  if (!timelinePropertySearch.value) {
+    return conciergeProperties.value;
+  }
+  const q = timelinePropertySearch.value.toLowerCase();
+  return conciergeProperties.value.filter(p => p.title && p.title.toLowerCase().includes(q));
+});
+
+const filteredTimelineProperties = computed(() => {
+  if (selectedTimelineProperties.value.length === 0) {
+    return conciergeProperties.value;
+  }
+  return conciergeProperties.value.filter(p => selectedTimelineProperties.value.includes(p.id));
+});
+
+const toggleTimelineProperty = (id) => {
+  const index = selectedTimelineProperties.value.indexOf(id);
+  if (index > -1) {
+    selectedTimelineProperties.value.splice(index, 1);
+  } else {
+    selectedTimelineProperties.value.push(id);
+  }
+};
+
+const clearTimelineProperties = () => {
+  selectedTimelineProperties.value = [];
+};
+
+const selectAllTimelineProperties = () => {
+  selectedTimelineProperties.value = conciergeProperties.value.map(p => p.id);
+};
+
+const closeTimelineDropdown = (e) => {
+  if (!e.target.closest('.timeline-property-filter-container')) {
+    showTimelinePropertyDropdown.value = false;
+  }
+};
+
+const handlePropertyDetailsCellClick = (prop, day) => {
+  const state = selectionState.value;
+  if (state.propertyId !== prop.id || !state.startDate) {
+    // Start range selection
+    state.propertyId = prop.id;
+    state.startDate = day;
+    state.endDate = null;
+    state.hoverDate = day;
+  } else {
+    // Second click – show action modal (same as main calendar)
+    state.endDate = day;
+    showCalendarSelectionModal.value = true;
+  }
+};
+const propertyCalendarWeeks = computed(() => {
+  const year = currentYear.value;
+  const month = currentMonth.value;
+  
+  const firstDay = new Date(year, month, 1);
+  const startDayOfWeek = (firstDay.getDay() + 6) % 7;
+  
+  const days = [];
+  
+  const prevMonthLastDate = new Date(year, month, 0).getDate();
+  for (let i = startDayOfWeek - 1; i >= 0; i--) {
+    const d = new Date(year, month - 1, prevMonthLastDate - i);
+    days.push({ date: d, isCurrentMonth: false });
+  }
+  
+  const currentMonthLastDate = new Date(year, month + 1, 0).getDate();
+  for (let i = 1; i <= currentMonthLastDate; i++) {
+    const d = new Date(year, month, i);
+    days.push({ date: d, isCurrentMonth: true });
+  }
+  
+  const totalCells = Math.ceil(days.length / 7) * 7;
+  const nextMonthDaysToAdd = totalCells - days.length;
+  for (let i = 1; i <= nextMonthDaysToAdd; i++) {
+    const d = new Date(year, month + 1, i);
+    days.push({ date: d, isCurrentMonth: false });
+  }
+  
+  const weeks = [];
+  for (let i = 0; i < days.length; i += 7) {
+    weeks.push(days.slice(i, i + 7));
+  }
+  return weeks;
+});
+
+const getGridDayEvents = (prop, dateObj) => {
+  if (!prop || !prop.bookings) return [];
+  const dateStr = formatDateToISO(dateObj);
+  
+  const events = [];
+  
+  prop.bookings.forEach(b => {
+    if (b.start_date === dateStr) {
+      events.push({ type: 'in', booking: b });
+    } else if (b.end_date === dateStr) {
+      events.push({ type: 'out', booking: b });
+    } else if (b.start_date < dateStr && dateStr < b.end_date) {
+      events.push({ type: 'stay', booking: b });
+    }
+  });
+  
+  return events;
+};const getPlatformColor = (booking) => {
+  const platform = (booking.platform || '').toLowerCase();
+  if (booking.is_block) return '#64748b';
+  if (platform === 'airbnb') return '#ef4444';
+  if (platform === 'booking') return '#2563eb';
+  return '#f97316';
+};const checkConciergeOverlap = (propertyId, startDateStr, endDateStr, excludeBookingId = null) => {
+  const prop = conciergeProperties.value.find(p => p.id === propertyId);
+  if (!prop || !prop.bookings) return [];
+  return prop.bookings.filter(b => {
+    if (excludeBookingId && b.id === excludeBookingId) return false;
+    return b.start_date < endDateStr && b.end_date > startDateStr;
+  });
+};
+
+const deleteConciergeBookingSilent = async (bookingId) => {
+  const token = localStorage.getItem("admin_token");
+  try {
+    await fetch(`${backendUrl}/concierge/bookings/${bookingId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` }
+    });
+  } catch (err) {
+    console.error("Failed to delete overlapping booking silently:", err);
+  }
+};
+
 onMounted(async () => {
   fetchProperties();
   fetchBlogPosts();
@@ -3532,10 +3945,16 @@ onMounted(async () => {
   fetchReportCleaningAssignments();
   fetchCleanerTransactions();
 
+  window.addEventListener('click', closeTimelineDropdown);
+
   if (isSuperuser.value) {
     fetchUsers();
     fetchPasswordResets();
   }
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('click', closeTimelineDropdown);
 });
 
 watch(cleaningSelectedDate, () => {
@@ -5656,6 +6075,7 @@ watch(cleaningSelectedDate, () => {
             <span class="material-icons-outlined" style="margin-right: 0.25rem;">dashboard</span>
             Dashboard
           </button>
+          
           <button 
             @click="currentConciergeView = 'calendar'" 
             class="action-header-btn" 
@@ -5664,47 +6084,76 @@ watch(cleaningSelectedDate, () => {
             <span class="material-icons-outlined" style="margin-right: 0.25rem;">calendar_month</span>
             Timeline
           </button>
-          <button 
-            @click="currentConciergeView = 'reservations-list'" 
-            class="action-header-btn" 
-            :style="currentConciergeView === 'reservations-list' ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
-          >
-            <span class="material-icons-outlined" style="margin-right: 0.25rem;">list_alt</span>
-            Reservations List
-          </button>
-          <button 
-            @click="currentConciergeView = 'cleaning'" 
-            class="action-header-btn" 
-            :style="currentConciergeView === 'cleaning' ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
-          >
-            <span class="material-icons-outlined" style="margin-right: 0.25rem;">cleaning_services</span>
-            Cleaning Schedule
-          </button>
-          <button 
-            @click="currentConciergeView = 'cleaning-report'; fetchReportCleaningAssignments(); fetchCleanerTransactions();" 
-            class="action-header-btn" 
-            :style="currentConciergeView === 'cleaning-report' ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
-          >
-            <span class="material-icons-outlined" style="margin-right: 0.25rem;">summarize</span>
-            Cleaning Report
-          </button>
-          <button 
-            @click="currentConciergeView = 'reports-tracking'" 
-            class="action-header-btn" 
-            :style="currentConciergeView === 'reports-tracking' ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
-          >
-            <span class="material-icons-outlined" style="margin-right: 0.25rem;">mail_outline</span>
-            Reports Tracking
-          </button>
           
-          <button 
-            @click="openQuickBooking" 
-            class="action-header-btn secondary-btn"
-            style="margin-left: auto; background-color: white; border: 1px solid #d1d5db;"
-          >
-            <span class="material-icons-outlined">calendar_today</span>
-            Add Reservation
-          </button>
+          <!-- Reservations Dropdown -->
+          <div class="nav-dropdown-wrapper">
+            <button 
+              class="action-header-btn" 
+              :style="['reservations-list', 'reports-tracking'].includes(currentConciergeView) ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
+            >
+              <span class="material-icons-outlined" style="margin-right: 0.25rem;">book_online</span>
+              Reservations
+              <span class="material-icons-outlined" style="font-size: 1rem; margin-left: 0.25rem;">expand_more</span>
+            </button>
+            <div class="nav-dropdown-menu">
+              <a 
+                @click="currentConciergeView = 'reservations-list'"
+                :class="{ active: currentConciergeView === 'reservations-list' }"
+              >
+                <span class="material-icons-outlined">list_alt</span>
+                Reservations List
+              </a>
+              <a 
+                @click="openQuickBooking"
+              >
+                <span class="material-icons-outlined">add_circle_outline</span>
+                Add Reservation
+              </a>
+              <a 
+                @click="currentConciergeView = 'reports-tracking'"
+                :class="{ active: currentConciergeView === 'reports-tracking' }"
+              >
+                <span class="material-icons-outlined">mail_outline</span>
+                Reports Tracking
+              </a>
+            </div>
+          </div>
+
+          <!-- Cleaning Dropdown -->
+          <div class="nav-dropdown-wrapper">
+            <button 
+              class="action-header-btn" 
+              :style="['cleaning', 'cleaning-report', (isSuperuser ? 'cleaner-payments' : '')].includes(currentConciergeView) ? 'background: var(--primary); color: white;' : 'background: #f3f4f6; color: #475569;'"
+            >
+              <span class="material-icons-outlined" style="margin-right: 0.25rem;">cleaning_services</span>
+              Cleaning
+              <span class="material-icons-outlined" style="font-size: 1rem; margin-left: 0.25rem;">expand_more</span>
+            </button>
+            <div class="nav-dropdown-menu">
+              <a 
+                @click="currentConciergeView = 'cleaning'"
+                :class="{ active: currentConciergeView === 'cleaning' }"
+              >
+                <span class="material-icons-outlined">schedule</span>
+                Cleaning Schedule
+              </a>
+              <a 
+                @click="currentConciergeView = 'cleaning-report'; fetchReportCleaningAssignments(); fetchCleanerTransactions();"
+                :class="{ active: currentConciergeView === 'cleaning-report' }"
+              >
+                <span class="material-icons-outlined">summarize</span>
+                Cleaning Report
+              </a>
+              <a 
+                v-if="isSuperuser"
+                @click="currentConciergeView = 'cleaner-payments'; fetchReportCleaningAssignments(); fetchCleanerTransactions();"
+                :class="{ active: currentConciergeView === 'cleaner-payments' }"
+              >
+                <span class="material-icons-outlined">account_balance_wallet</span>
+                Wage Payments
+              </a>
+            </div>
+          </div>
         </div>
 
         <!-- Add/Edit Concierge Form -->
@@ -6761,6 +7210,100 @@ watch(cleaningSelectedDate, () => {
               </div>
             </div>
 
+            <!-- Property Search / Filter Bar (Multi-select) -->
+            <div class="timeline-property-filter-container" style="position: relative; margin-bottom: 1.25rem; z-index: 99;">
+              <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem; letter-spacing: 0.05em;">Filter Properties</label>
+              
+              <div 
+                @click="showTimelinePropertyDropdown = !showTimelinePropertyDropdown"
+                style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.55rem 1rem; border: 1.5px solid #e2e8f0; border-radius: 8px; background: white; cursor: pointer; min-height: 42px; position: relative;"
+              >
+                <!-- Selected tags list -->
+                <div v-if="selectedTimelineProperties.length === 0" style="color: #94a3b8; font-size: 0.9rem; font-weight: 500;">
+                  Showing all properties (Click to filter...)
+                </div>
+                <div v-else style="display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center;">
+                  <span 
+                    v-for="id in selectedTimelineProperties" 
+                    :key="id" 
+                    style="background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; border-radius: 6px; padding: 0.15rem 0.5rem; font-size: 0.8rem; font-weight: 700; display: inline-flex; align-items: center; gap: 0.25rem;"
+                    @click.stop="toggleTimelineProperty(id)"
+                  >
+                    {{ conciergeProperties.find(p => p.id === id)?.title }}
+                    <span class="material-icons-outlined" style="font-size: 0.9rem; cursor: pointer;">close</span>
+                  </span>
+                </div>
+                
+                <span class="material-icons-outlined" style="margin-left: auto; color: #64748b;">
+                  {{ showTimelinePropertyDropdown ? 'expand_less' : 'expand_more' }}
+                </span>
+              </div>
+
+              <!-- Dropdown Panel -->
+              <transition name="fade">
+                <div 
+                  v-if="showTimelinePropertyDropdown" 
+                  style="position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1.5px solid #e2e8f0; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); margin-top: 0.35rem; padding: 1rem; z-index: 999; display: flex; flex-direction: column; gap: 0.75rem;"
+                  @click.stop
+                >
+                  <!-- Search input inside dropdown -->
+                  <div style="position: relative;">
+                    <span class="material-icons-outlined" style="position: absolute; left: 0.75rem; top: 50%; transform: translateY(-50%); color: #94a3b8; font-size: 1.15rem;">search</span>
+                    <input 
+                      v-model="timelinePropertySearch" 
+                      type="text" 
+                      placeholder="Search property name..." 
+                      style="width: 100%; padding: 0.5rem 1rem 0.5rem 2.25rem; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 0.875rem;"
+                      @click.stop
+                    />
+                  </div>
+
+                  <!-- Quick Actions (Select All, Clear) -->
+                  <div style="display: flex; gap: 0.5rem;">
+                    <button 
+                      @click="selectAllTimelineProperties" 
+                      style="background: #f1f5f9; border: none; color: #475569; padding: 0.35rem 0.75rem; border-radius: 4px; font-size: 0.75rem; font-weight: 700; cursor: pointer; transition: background 0.15s;"
+                      @mouseenter="$event.target.style.background='#e2e8f0'"
+                      @mouseleave="$event.target.style.background='#f1f5f9'"
+                    >
+                      Select All
+                    </button>
+                    <button 
+                      @click="clearTimelineProperties" 
+                      style="background: #f1f5f9; border: none; color: #475569; padding: 0.35rem 0.75rem; border-radius: 4px; font-size: 0.75rem; font-weight: 700; cursor: pointer; transition: background 0.15s;"
+                      @mouseenter="$event.target.style.background='#e2e8f0'"
+                      @mouseleave="$event.target.style.background='#f1f5f9'"
+                    >
+                      Clear Selection
+                    </button>
+                  </div>
+
+                  <!-- Properties list with checkboxes -->
+                  <div style="max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label 
+                      v-for="p in filteredTimelinePropertiesDropdown" 
+                      :key="p.id" 
+                      style="display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.5rem; border-radius: 6px; cursor: pointer; transition: background 0.15s; font-size: 0.875rem;"
+                      @mouseenter="$event.target.style.background='#f8fafc'"
+                      @mouseleave="$event.target.style.background='transparent'"
+                    >
+                      <input 
+                        type="checkbox" 
+                        :checked="selectedTimelineProperties.includes(p.id)" 
+                        @change="toggleTimelineProperty(p.id)"
+                        style="width: 16px; height: 16px; border-radius: 4px; accent-color: #2563eb; cursor: pointer;"
+                      />
+                      <span style="font-weight: 600; color: #334155;">{{ p.title }}</span>
+                      <span v-if="p.address" style="font-size: 0.75rem; color: #94a3b8; font-weight: 400; margin-left: auto;">{{ p.address }}</span>
+                    </label>
+                    <div v-if="filteredTimelinePropertiesDropdown.length === 0" style="padding: 1rem; text-align: center; color: #94a3b8; font-size: 0.85rem;">
+                      No properties found matching your search.
+                    </div>
+                  </div>
+                </div>
+              </transition>
+            </div>
+
             <!-- Timeline Scheduler Grid -->
             <div class="timeline-container" style="overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 12px; background: white; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
               <div class="timeline-grid" :style="{ minWidth: (220 + daysInActiveMonth.length * 45) + 'px' }">
@@ -6792,7 +7335,7 @@ watch(cleaningSelectedDate, () => {
 
                 <!-- Property Rows -->
                 <div 
-                  v-for="prop in conciergeProperties" 
+                  v-for="prop in filteredTimelineProperties" 
                   :key="prop.id" 
                   class="timeline-row property-row" 
                   style="display: flex; border-bottom: 1px solid #e5e7eb; min-height: 85px;"
@@ -6864,8 +7407,9 @@ watch(cleaningSelectedDate, () => {
                   </div>
                 </div>
 
-                <div v-if="conciergeProperties.length === 0" style="padding: 3rem; text-align: center; color: #9ca3af; font-weight: 600;">
-                  No short-term properties added. Click "Add Short-Term Property" above to get started.
+                <div v-if="filteredTimelineProperties.length === 0" style="padding: 3rem; text-align: center; color: #9ca3af; font-weight: 600;">
+                  <span v-if="conciergeProperties.length === 0">No short-term properties added. Click "Add Short-Term Property" above to get started.</span>
+                  <span v-else>No properties match your filter selection. <a @click="clearTimelineProperties" style="color: var(--accent); cursor: pointer; text-decoration: underline;">Clear selection</a> to show all.</span>
                 </div>
               </div>
             </div>
@@ -6916,256 +7460,202 @@ watch(cleaningSelectedDate, () => {
               </div>
             </div>
 
-            <!-- Subview Switcher Tab Bar -->
-            <div style="display: flex; gap: 0.5rem; margin-bottom: 2rem; border-bottom: 2px solid #f1f5f9; padding-bottom: 0.25rem;">
-              <button 
-                @click="cleaningReportSubView = 'wages'" 
-                style="padding: 0.6rem 1.25rem; font-weight: 700; border: none; background: none; cursor: pointer; font-size: 0.9rem; transition: all 0.2s; display: flex; align-items: center; gap: 0.35rem;" 
-                :style="cleaningReportSubView === 'wages' ? 'color: var(--primary); border-bottom: 3px solid var(--accent);' : 'color: #94a3b8;'"
-              >
-                <span class="material-icons-outlined" style="font-size: 1.1rem;">receipt</span>
-                Wages & Payroll Summary
-              </button>
-              <button 
-                @click="cleaningReportSubView = 'transactions'" 
-                style="padding: 0.6rem 1.25rem; font-weight: 700; border: none; background: none; cursor: pointer; font-size: 0.9rem; transition: all 0.2s; display: flex; align-items: center; gap: 0.35rem;" 
-                :style="cleaningReportSubView === 'transactions' ? 'color: var(--primary); border-bottom: 3px solid var(--accent);' : 'color: #94a3b8;'"
-              >
-                <span class="material-icons-outlined" style="font-size: 1.1rem;">receipt_long</span>
-                Expenses & Advances
-              </button>
-            </div>
-
             <!-- No data state -->
-            <div v-if="cleaningReportSubView === 'wages' && filteredCleaningAssignmentsList.length === 0" style="text-align: center; padding: 4rem 2rem; color: #9ca3af;">
+            <div v-if="filteredCleaningAssignmentsList.length === 0" style="text-align: center; padding: 4rem 2rem; color: #9ca3af;">
               <span class="material-icons-outlined" style="font-size: 3.5rem; display: block; margin-bottom: 0.75rem; color: #cbd5e1;">cleaning_services</span>
               <p style="margin: 0; font-size: 1rem; font-weight: 600; color: #64748b;">No cleaning assignments recorded for this period.</p>
               <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: #94a3b8;">Try changing the date filters or assign cleanings first.</p>
             </div>
 
             <div v-else>
-              <!-- 1. WAGES SUBVIEW -->
-              <div v-if="cleaningReportSubView === 'wages'">
-                <!-- SALARY SUMMARY TABLE -->
-                <div style="margin-bottom: 2.5rem;">
-                  <h3 style="font-size: 0.9rem; font-weight: 800; text-transform: uppercase; color: #334155; margin: 0 0 0.75rem 0; letter-spacing: 0.05em; display: flex; align-items: center; gap: 0.5rem;">
-                    <span class="material-icons-outlined" style="font-size: 1.1rem; color: #0284c7;">payments</span>
-                    Payroll & Bookkeeping Summary
-                  </h3>
-                  <div style="border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);">
-                    <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
-                      <thead>
-                        <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
-                          <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Cleaner</th>
-                          <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Cleanings</th>
-                          <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Total Hours</th>
-                          <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Wage</th>
-                          <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em; color: #2563eb;">Expenses</th>
-                          <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em; color: #dc2626;">Advances</th>
-                          <th style="padding: 0.75rem 1rem; text-align: right; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em; color: #059669;">Net Payout Due</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr v-for="(sum, idx) in cleanerSalarySummary" :key="sum.cleaner.id" :style="{ background: idx % 2 === 0 ? '#fff' : '#fafafa' }" style="border-bottom: 1px solid #f1f5f9;">
-                          <td style="padding: 0.75rem 1rem; font-weight: 700; color: var(--primary);">
-                            {{ sum.cleaner.name }}
-                            <span style="font-size: 0.72rem; color: #94a3b8; font-weight: 500; display: block;">
-                              rate: €{{ parseFloat(sum.rate).toFixed(2) }}/hr
-                            </span>
-                          </td>
-                          <td style="padding: 0.75rem 1rem; text-align: center; font-weight: 600; color: #475569;">
-                            {{ sum.cleaningsCount }}
-                          </td>
-                          <td style="padding: 0.75rem 1rem; text-align: center; color: #475569;">
-                            {{ sum.totalHours }} hrs
-                          </td>
-                          <td style="padding: 0.75rem 1rem; text-align: center; font-weight: 600; color: #334155;">
-                            €{{ sum.wage.toFixed(2) }}
-                          </td>
-                          <td style="padding: 0.75rem 1rem; text-align: center; font-weight: 600; color: #2563eb;">
-                            €{{ sum.expenses.toFixed(2) }}
-                          </td>
-                          <td style="padding: 0.75rem 1rem; text-align: center; font-weight: 600; color: #dc2626;">
-                            €{{ sum.advances.toFixed(2) }}
-                          </td>
-                          <td style="padding: 0.75rem 1rem; text-align: right; font-weight: 800; color: #059669; font-size: 1rem;">
-                            €{{ sum.netPayout.toFixed(2) }}
-                          </td>
-                        </tr>
-                      </tbody>
-                      <tfoot>
-                        <tr style="background: #f0fdf4; font-weight: 800; border-top: 1px solid #d1fae5;">
-                          <td style="padding: 0.85rem 1rem; color: #1e3a8a;">Grand Total</td>
-                          <td style="padding: 0.85rem 1rem; text-align: center; color: #1e3a8a;">
-                            {{ cleanerSalarySummary.reduce((s, r) => s + r.cleaningsCount, 0) }}
-                          </td>
-                          <td style="padding: 0.85rem 1rem; text-align: center; color: #1e3a8a;">
-                            {{ cleanerSalarySummary.reduce((s, r) => s + r.totalHours, 0) }} hrs
-                          </td>
-                          <td style="padding: 0.85rem 1rem; text-align: center; color: #1e3a8a;">
-                            €{{ cleanerSalarySummary.reduce((s, r) => s + r.wage, 0).toFixed(2) }}
-                          </td>
-                          <td style="padding: 0.85rem 1rem; text-align: center; color: #2563eb;">
-                            €{{ cleanerSalarySummary.reduce((s, r) => s + r.expenses, 0).toFixed(2) }}
-                          </td>
-                          <td style="padding: 0.85rem 1rem; text-align: center; color: #dc2626;">
-                            €{{ cleanerSalarySummary.reduce((s, r) => s + r.advances, 0).toFixed(2) }}
-                          </td>
-                          <td style="padding: 0.85rem 1rem; text-align: right; color: #059669; font-size: 1.1rem;">
-                            €{{ cleanerSalarySummary.reduce((s, r) => s + r.netPayout, 0).toFixed(2) }}
-                          </td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  </div>
-                </div>
-
-                <!-- DETAILED CLEANING BREAKDOWN -->
-                <div>
-                  <h3 style="font-size: 0.9rem; font-weight: 800; text-transform: uppercase; color: #334155; margin: 2.5rem 0 0.75rem 0; letter-spacing: 0.05em; display: flex; align-items: center; gap: 0.5rem;">
-                    <span class="material-icons-outlined" style="font-size: 1.1rem; color: #0284c7;">list</span>
-                    Detailed Cleaning Breakdown
-                  </h3>
-                  <div style="border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);">
-                    <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
-                      <thead>
-                        <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
-                          <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Date</th>
-                          <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Cleaner</th>
-                          <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Property</th>
-                          <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Duration</th>
-                          <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Hourly Rate</th>
-                          <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Wage</th>
-                          <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #2563eb; letter-spacing: 0.05em;">Expenses</th>
-                          <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #0284c7; letter-spacing: 0.05em;">Airbnb Fee</th>
-                          <th style="padding: 0.75rem 1rem; text-align: right; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Total Cost</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr v-for="(row, idx) in filteredCleaningAssignmentsList" :key="row.id" :style="{ background: idx % 2 === 0 ? '#fff' : '#fafafa' }" style="border-bottom: 1px solid #f1f5f9;">
-                          <td style="padding: 0.75rem 1rem; color: #374151; font-weight: 600;">
-                            {{ new Date(row.date).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) }}
-                          </td>
-                          <td style="padding: 0.75rem 1rem; font-weight: 700; color: #1e293b;">
-                            {{ row.cleaner_name }}
-                          </td>
-                          <td style="padding: 0.75rem 1rem;">
-                            <div style="font-weight: 600; color: var(--primary);">{{ row.property_title }}</div>
-                            <div v-if="row.property_address" style="font-size: 0.75rem; color: #64748b; margin-top: 0.1rem;">{{ row.property_address }}</div>
-                            <div v-if="row.notes" style="font-size: 0.75rem; color: #6b7280; font-style: italic; margin-top: 0.25rem; display: flex; align-items: center; gap: 0.25rem;">
-                              <span class="material-icons-outlined" style="font-size: 0.9rem; color: #94a3b8;">chat_bubble_outline</span>
-                              {{ row.notes }}
-                            </div>
-                          </td>
-                          <td style="padding: 0.75rem 1rem; text-align: center; color: #334155; font-weight: 500;">
-                            <span v-if="row.duration > 0">{{ row.duration }} hrs</span>
-                            <span v-else style="color: #cbd5e1;">—</span>
-                          </td>
-                          <td style="padding: 0.75rem 1rem; text-align: center; color: #374151; font-weight: 500;">
-                            <span v-if="row.rate > 0">€{{ row.rate.toFixed(2) }}/hr</span>
-                            <span v-else style="color: #cbd5e1;">—</span>
-                          </td>
-                          <td style="padding: 0.75rem 1rem; text-align: center; color: #374151; font-weight: 600;">
-                            €{{ row.wage.toFixed(2) }}
-                          </td>
-                          <td style="padding: 0.75rem 1rem; text-align: center; color: #2563eb; font-weight: 600;">
-                            <span v-if="row.expenses_sum > 0">€{{ row.expenses_sum.toFixed(2) }}</span>
-                            <span v-else style="color: #cbd5e1;">—</span>
-                          </td>
-                          <td style="padding: 0.75rem 1rem; text-align: center; color: #0284c7; font-weight: 600;">
-                            <span v-if="row.airbnb_fee > 0">€{{ row.airbnb_fee.toFixed(2) }}</span>
-                            <span v-else style="color: #cbd5e1;">—</span>
-                          </td>
-                          <td style="padding: 0.75rem 1rem; text-align: right; font-weight: 800;" :style="{ color: row.total_cost > 0 ? (row.total_cost > row.airbnb_fee ? '#dc2626' : '#059669') : '#94a3b8' }">
-                            <span v-if="row.total_cost > 0">€{{ row.total_cost.toFixed(2) }}</span>
-                            <span v-else style="font-size: 0.78rem; color: #cbd5e1;">N/A</span>
-                          </td>
-                        </tr>
-                      </tbody>
-                      <tfoot>
-                        <tr style="background: #f8fafc; font-weight: 800; border-top: 1px solid #cbd5e1;">
-                          <td colspan="3" style="padding: 0.85rem 1rem; color: #334155;">Total for current view</td>
-                          <td style="padding: 0.85rem 1rem; text-align: center; color: #334155;">
-                            {{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.duration, 0) }} hrs
-                          </td>
-                          <td></td>
-                          <td style="padding: 0.85rem 1rem; text-align: center; color: #334155;">
-                            €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.wage, 0).toFixed(2) }}
-                          </td>
-                          <td style="padding: 0.85rem 1rem; text-align: center; color: #2563eb;">
-                            €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.expenses_sum, 0).toFixed(2) }}
-                          </td>
-                          <td style="padding: 0.85rem 1rem; text-align: center; color: #0284c7;">
-                            €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.airbnb_fee, 0).toFixed(2) }}
-                          </td>
-                          <td style="padding: 0.85rem 1rem; text-align: right; color: #059669; font-size: 1.05rem;">
-                            €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.total_cost, 0).toFixed(2) }}
-                          </td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  </div>
+              <!-- SALARY SUMMARY TABLE -->
+              <div style="margin-bottom: 2.5rem;">
+                <h3 style="font-size: 0.9rem; font-weight: 800; text-transform: uppercase; color: #334155; margin: 0 0 0.75rem 0; letter-spacing: 0.05em; display: flex; align-items: center; gap: 0.5rem;">
+                  <span class="material-icons-outlined" style="font-size: 1.15rem; color: #0284c7;">payments</span>
+                  Payroll & Bookkeeping Summary
+                </h3>
+                <div style="border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);">
+                  <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+                    <thead>
+                      <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                        <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Cleaner</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Cleanings</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Hours</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Wages</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #2563eb; letter-spacing: 0.05em;">Other Exp</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #059669; letter-spacing: 0.05em;">Market</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #0d9488; letter-spacing: 0.05em;">Laundry</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #dc2626; letter-spacing: 0.05em;">Advances</th>
+                        <th style="padding: 0.75rem 1rem; text-align: right; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #059669; letter-spacing: 0.05em;">Net Payout</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(sum, idx) in cleanerSalarySummary" :key="sum.cleaner.id" :style="{ background: idx % 2 === 0 ? '#fff' : '#fafafa' }" style="border-bottom: 1px solid #f1f5f9;">
+                        <td style="padding: 0.75rem 1rem; font-weight: 700; color: #1e293b;">
+                          {{ sum.cleaner.name }}
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; font-weight: 600; color: #475569;">
+                          {{ sum.cleaningsCount }}
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; color: #475569; font-weight: 500;">
+                          {{ sum.totalHours }} hrs
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; color: #374151; font-weight: 600;">
+                          €{{ sum.wage.toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; color: #2563eb; font-weight: 600;">
+                          €{{ sum.otherExpenses.toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; color: #059669; font-weight: 600;">
+                          €{{ sum.marketExpenses.toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; color: #0d9488; font-weight: 600;">
+                          €{{ sum.laundryExpenses.toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; color: #dc2626; font-weight: 600;">
+                          €{{ sum.advances.toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: right; font-weight: 800; color: #059669; font-size: 1.05rem;">
+                          €{{ sum.netPayout.toFixed(2) }}
+                        </td>
+                      </tr>
+                    </tbody>
+                    <tfoot>
+                      <tr style="background: #f8fafc; font-weight: 800; border-top: 1px solid #cbd5e1;">
+                        <td style="padding: 0.85rem 1rem; color: #334155;">Total for current view</td>
+                        <td style="padding: 0.85rem 1rem; text-align: center; color: #334155;">
+                          {{ cleanerSalarySummary.reduce((s, r) => s + r.cleaningsCount, 0) }} cleanings
+                        </td>
+                        <td style="padding: 0.85rem 1rem; text-align: center; color: #334155;">
+                          {{ cleanerSalarySummary.reduce((s, r) => s + r.totalHours, 0) }} hrs
+                        </td>
+                        <td style="padding: 0.85rem 1rem; text-align: center; color: #334155;">
+                          €{{ cleanerSalarySummary.reduce((s, r) => s + r.wage, 0).toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.85rem 1rem; text-align: center; color: #2563eb;">
+                          €{{ cleanerSalarySummary.reduce((s, r) => s + r.otherExpenses, 0).toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.85rem 1rem; text-align: center; color: #059669;">
+                          €{{ cleanerSalarySummary.reduce((s, r) => s + r.marketExpenses, 0).toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.85rem 1rem; text-align: center; color: #0d9488;">
+                          €{{ cleanerSalarySummary.reduce((s, r) => s + r.laundryExpenses, 0).toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.85rem 1rem; text-align: center; color: #dc2626;">
+                          €{{ cleanerSalarySummary.reduce((s, r) => s + r.advances, 0).toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.85rem 1rem; text-align: right; color: #059669; font-size: 1.1rem;">
+                          €{{ cleanerSalarySummary.reduce((s, r) => s + r.netPayout, 0).toFixed(2) }}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
                 </div>
               </div>
 
-              <!-- 2. TRANSACTIONS LOG SUBVIEW -->
-              <div v-if="cleaningReportSubView === 'transactions'">
+              <!-- DETAILED CLEANING BREAKDOWN -->
+              <div>
+                <h3 style="font-size: 0.9rem; font-weight: 800; text-transform: uppercase; color: #334155; margin: 2.5rem 0 0.75rem 0; letter-spacing: 0.05em; display: flex; align-items: center; gap: 0.5rem;">
+                  <span class="material-icons-outlined" style="font-size: 1.15rem; color: #0284c7;">list</span>
+                  Detailed Cleaning Breakdown
+                </h3>
                 <div style="border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);">
                   <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
                     <thead>
                       <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
                         <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Date</th>
                         <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Cleaner</th>
-                        <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Property / Flat</th>
-                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Type</th>
-                        <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Description / Notes</th>
-                        <th style="padding: 0.75rem 1rem; text-align: right; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Amount</th>
+                        <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Property</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Duration</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Hourly Rate</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Wage</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #2563eb; letter-spacing: 0.05em;">Other Exp</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #059669; letter-spacing: 0.05em;">Market</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #0d9488; letter-spacing: 0.05em;">Laundry</th>
+                        <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #0284c7; letter-spacing: 0.05em;">Airbnb Fee</th>
+                        <th style="padding: 0.75rem 1rem; text-align: right; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Total Cost</th>
                         <th style="padding: 0.75rem 1rem; text-align: center; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em;">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
-                      <tr v-for="(t, idx) in filteredTransactionsList" :key="t.id" :style="{ background: idx % 2 === 0 ? '#fff' : '#fafafa' }" style="border-bottom: 1px solid #f1f5f9;">
+                      <tr v-for="(row, idx) in filteredCleaningAssignmentsList" :key="row.id" :style="{ background: idx % 2 === 0 ? '#fff' : '#fafafa' }" style="border-bottom: 1px solid #f1f5f9;">
                         <td style="padding: 0.75rem 1rem; color: #374151; font-weight: 600;">
-                          {{ new Date(t.transaction_date).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) }}
+                          {{ new Date(row.date).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) }}
                         </td>
                         <td style="padding: 0.75rem 1rem; font-weight: 700; color: #1e293b;">
-                          {{ t.cleaner_name }}
+                          {{ row.cleaner_name }}
                         </td>
-                        <td style="padding: 0.75rem 1rem; font-weight: 600; color: var(--primary);">
-                          {{ t.property_title || '—' }}
+                        <td style="padding: 0.75rem 1rem;">
+                          <div style="font-weight: 600; color: var(--primary);">{{ row.property_title }}</div>
+                          <div v-if="row.property_address" style="font-size: 0.75rem; color: #64748b; margin-top: 0.1rem;">{{ row.property_address }}</div>
+                          <div v-if="row.notes" style="font-size: 0.75rem; color: #6b7280; font-style: italic; margin-top: 0.25rem; display: flex; align-items: center; gap: 0.25rem;">
+                            <span class="material-icons-outlined" style="font-size: 0.9rem; color: #94a3b8;">chat_bubble_outline</span>
+                            {{ row.notes }}
+                          </div>
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; color: #334155; font-weight: 500;">
+                          <span v-if="row.duration > 0">{{ row.duration }} hrs</span>
+                          <span v-else style="color: #cbd5e1;">—</span>
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; color: #374151; font-weight: 500;">
+                          <span v-if="row.rate > 0">€{{ row.rate.toFixed(2) }}/hr</span>
+                          <span v-else style="color: #cbd5e1;">—</span>
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; color: #374151; font-weight: 600;">
+                          €{{ row.wage.toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; color: #2563eb; font-weight: 600;">
+                          <span v-if="row.other_expense > 0">€{{ row.other_expense.toFixed(2) }}</span>
+                          <span v-else style="color: #cbd5e1;">—</span>
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; color: #059669; font-weight: 600;">
+                          <span v-if="row.market_expense > 0">€{{ row.market_expense.toFixed(2) }}</span>
+                          <span v-else style="color: #cbd5e1;">—</span>
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; color: #0d9488; font-weight: 600;">
+                          <span v-if="row.laundry_expense > 0">€{{ row.laundry_expense.toFixed(2) }}</span>
+                          <span v-else style="color: #cbd5e1;">—</span>
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: center; color: #0284c7; font-weight: 600;">
+                          <span v-if="row.airbnb_fee > 0">€{{ row.airbnb_fee.toFixed(2) }}</span>
+                          <span v-else style="color: #cbd5e1;">—</span>
+                        </td>
+                        <td style="padding: 0.75rem 1rem; text-align: right; font-weight: 800;" :style="{ color: row.total_cost > 0 ? (row.total_cost > row.airbnb_fee ? '#dc2626' : '#059669') : '#94a3b8' }">
+                          <span v-if="row.total_cost > 0">€{{ row.total_cost.toFixed(2) }}</span>
+                          <span v-else style="font-size: 0.78rem; color: #cbd5e1;">N/A</span>
                         </td>
                         <td style="padding: 0.75rem 1rem; text-align: center;">
-                          <span 
-                            style="font-size: 0.72rem; font-weight: 700; padding: 0.15rem 0.5rem; border-radius: 4px; text-transform: uppercase; display: inline-block;"
-                            :style="t.type === 'expense' ? 'background: #eff6ff; color: #2563eb;' : 'background: #fef2f2; color: #dc2626;'"
-                          >
-                            {{ t.type === 'expense' ? 'Expense' : 'Advance' }}
-                          </span>
-                        </td>
-                        <td style="padding: 0.75rem 1rem; color: #4b5563;">
-                          {{ t.description || '—' }}
-                        </td>
-                        <td style="padding: 0.75rem 1rem; text-align: right; font-weight: 700;" :style="t.type === 'expense' ? 'color: #2563eb;' : 'color: #dc2626;'">
-                          €{{ parseFloat(t.amount).toFixed(2) }}
-                        </td>
-                        <td style="padding: 0.75rem 1rem; text-align: center;">
-                          <button @click="deleteCleanerTransaction(t.id)" style="border: none; background: none; color: #ef4444; cursor: pointer; padding: 0.25rem; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center;">
-                            <span class="material-icons-outlined" style="font-size: 1.15rem;">delete</span>
+                          <button @click="startEditCleaningAssignment(row)" class="edit-btn" style="padding: 4px 8px; font-size: 0.75rem; border-radius: 4px; display: inline-flex; align-items: center; gap: 0.25rem;">
+                            <span class="material-icons-outlined" style="font-size: 0.85rem;">edit</span>
+                            Edit
                           </button>
-                        </td>
-                      </tr>
-                      <tr v-if="filteredTransactionsList.length === 0">
-                        <td colspan="7" style="padding: 2.5rem; text-align: center; color: #94a3b8;">
-                          No logged expenses or advances for this month.
                         </td>
                       </tr>
                     </tbody>
                     <tfoot>
                       <tr style="background: #f8fafc; font-weight: 800; border-top: 1px solid #cbd5e1;">
-                        <td colspan="5" style="padding: 0.85rem 1rem; color: #334155;">Totals for current filter</td>
-                        <td style="padding: 0.85rem 1rem; text-align: right; color: #334155;">
-                          <div style="font-size: 0.75rem; color: #2563eb; font-weight: 600;">Exp: €{{ filteredTransactionsList.filter(t=>t.type==='expense').reduce((s,t)=>s+parseFloat(t.amount), 0).toFixed(2) }}</div>
-                          <div style="font-size: 0.75rem; color: #dc2626; font-weight: 600;">Adv: €{{ filteredTransactionsList.filter(t=>t.type==='advance').reduce((s,t)=>s+parseFloat(t.amount), 0).toFixed(2) }}</div>
+                        <td colspan="3" style="padding: 0.85rem 1rem; color: #334155;">Total for current view</td>
+                        <td style="padding: 0.85rem 1rem; text-align: center; color: #334155;">
+                          {{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.duration, 0) }} hrs
+                        </td>
+                        <td></td>
+                        <td style="padding: 0.85rem 1rem; text-align: center; color: #334155;">
+                          €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.wage, 0).toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.85rem 1rem; text-align: center; color: #2563eb;">
+                          €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.other_expense, 0).toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.85rem 1rem; text-align: center; color: #059669;">
+                          €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.market_expense, 0).toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.85rem 1rem; text-align: center; color: #0d9488;">
+                          €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.laundry_expense, 0).toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.85rem 1rem; text-align: center; color: #0284c7;">
+                          €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.airbnb_fee, 0).toFixed(2) }}
+                        </td>
+                        <td style="padding: 0.85rem 1rem; text-align: right; color: #059669; font-size: 1.05rem;">
+                          €{{ filteredCleaningAssignmentsList.reduce((s, r) => s + r.total_cost, 0).toFixed(2) }}
                         </td>
                         <td></td>
                       </tr>
@@ -7173,6 +7663,7 @@ watch(cleaningSelectedDate, () => {
                   </table>
                 </div>
               </div>
+            </div>
 
               <!-- 2. EXPENSES & ADVANCES MANAGEMENT MODAL (Add form only) -->
               <div v-if="showTransactionsManager" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 9999; padding: 1.5rem;" @click.self="showTransactionsManager = false">
@@ -7202,12 +7693,14 @@ watch(cleaningSelectedDate, () => {
                       <div>
                         <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Transaction Type *</label>
                         <select v-model="newTransactionForm.type" style="padding: 0.65rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%; background: #fff;">
-                          <option value="expense">Expense</option>
-                          <option value="advance">Advance</option>
+                          <option value="expense">Other Expense</option>
+                          <option value="market">Market Expense</option>
+                          <option value="laundry">Laundry Expense</option>
+                          <option value="advance">Salary Advance</option>
                         </select>
                       </div>
 
-                      <div v-if="newTransactionForm.type === 'expense'">
+                      <div v-if="['expense', 'market', 'laundry'].includes(newTransactionForm.type)">
                         <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Property / Flat (Optional)</label>
                         <select v-model="newTransactionForm.property_id" style="padding: 0.65rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%; background: #fff;">
                           <option value="">No Property / General Expense</option>
@@ -7227,7 +7720,7 @@ watch(cleaningSelectedDate, () => {
 
                       <div>
                         <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Description / Notes</label>
-                        <input v-model="newTransactionForm.description" type="text" placeholder="e.g. Detergent, Cash advance..." style="padding: 0.65rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                        <input v-model="newTransactionForm.description" type="text" placeholder="e.g. Detergent, Laundry tokens..." style="padding: 0.65rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
                       </div>
 
                       <button @click="addCleanerTransaction" class="submit-btn" style="width: 100%; justify-content: center; padding: 0.75rem; margin-top: 0.5rem; font-weight: 700;">
@@ -7238,9 +7731,306 @@ watch(cleaningSelectedDate, () => {
                   </div>
                 </div>
               </div>
-            </div>
+
+            <!-- Edit Assignment Modal Overlay -->
+            <transition name="fade">
+              <div v-if="showEditAssignmentModal" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 9999; padding: 1.5rem;" @click.self="showEditAssignmentModal = false">
+                <div style="background: white; border-radius: 16px; width: 100%; max-width: 450px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04); overflow: hidden; display: flex; flex-direction: column;">
+                  <!-- Modal Header -->
+                  <div style="padding: 1.25rem 1.5rem; background: #0284c7; color: white; display: flex; align-items: center; justify-content: space-between;">
+                    <h3 style="margin: 0; font-size: 1.05rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem;">
+                      <span class="material-icons-outlined">edit</span>
+                      Edit Cleaning Assignment
+                    </h3>
+                    <button @click="showEditAssignmentModal = false" style="background: none; border: none; color: #bae6fd; cursor: pointer; display: flex; align-items: center; transition: color 0.15s;" @mouseenter="$event.target.style.color='#fff'" @mouseleave="$event.target.style.color='#bae6fd'">
+                      <span class="material-icons-outlined" style="font-size: 1.5rem;">close</span>
+                    </button>
+                  </div>
+                  
+                  <!-- Modal Content -->
+                  <div style="padding: 1.5rem;">
+                    <form @submit.prevent="saveEditedCleaningAssignment" style="display: flex; flex-direction: column; gap: 1rem;">
+                      <div>
+                        <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Select Cleaner *</label>
+                        <select v-model="editAssignmentForm.cleaner_id" required style="padding: 0.65rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%; background: #fff; font-weight: 600;">
+                          <option v-for="c in cleaners" :key="c.id" :value="c.id">{{ c.name }}</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Cleaning Duration (hours) *</label>
+                        <input v-model.number="editAssignmentForm.max_cleaning_duration" type="number" min="0.1" step="0.1" required style="padding: 0.65rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%; font-weight: 700;" />
+                      </div>
+
+                      <div>
+                        <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Hourly Rate (€/hr) *</label>
+                        <input v-model.number="editAssignmentForm.hourly_rate" type="number" min="0" step="0.01" required style="padding: 0.65rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                      </div>
+
+                      <div>
+                        <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Airbnb Cleaning Fee (€) *</label>
+                        <input v-model.number="editAssignmentForm.airbnb_cleaning_fee" type="number" min="0" step="0.01" required style="padding: 0.65rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                      </div>
+
+                      <div>
+                        <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Notes</label>
+                        <input v-model="editAssignmentForm.notes" type="text" placeholder="Add optional details..." style="padding: 0.65rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                      </div>
+
+                      <button type="submit" class="submit-btn" style="width: 100%; justify-content: center; padding: 0.75rem; margin-top: 0.5rem; font-weight: 700; background-color: #0284c7; border-color: #0284c7;">
+                        <span class="material-icons-outlined" style="font-size: 1.15rem; margin-right: 0.35rem;">save</span>
+                        Save Changes
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            </transition>
 
           </section>
+        </div>
+
+        <!-- Cleaner Wage Payments View -->
+        <div v-else-if="currentConciergeView === 'cleaner-payments' && isSuperuser" class="concierge-dashboard">
+          <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+            
+            <!-- Header Row with Title and Button -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 1rem;">
+              <h2 style="font-size: 1.35rem; color: var(--primary); font-weight: 800; margin: 0; display: flex; align-items: center; gap: 0.5rem;">
+                <span class="material-icons-outlined" style="color: #2563eb;">account_balance_wallet</span>
+                Cleaner Wage Payments
+              </h2>
+              <button 
+                @click="showAddPaymentModal = true" 
+                class="action-header-btn" 
+                style="background-color: #10b981; color: white; font-weight: 700; padding: 0.5rem 1.25rem;"
+              >
+                <span class="material-icons-outlined">add_card</span>
+                Record Payment
+              </button>
+            </div>
+
+            <!-- Cleaner Balances Table Card -->
+            <div class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
+              <h3 style="font-size: 1rem; color: var(--primary); font-weight: 700; margin: 0 0 1.25rem 0; display: flex; align-items: center; gap: 0.5rem;">
+                <span class="material-icons-outlined" style="color: #2563eb;">account_balance_wallet</span>
+                Accumulated Payroll Balances (Cumulative)
+              </h3>
+              <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem; text-align: left;">
+                  <thead>
+                    <tr style="border-bottom: 2px solid #f3f4f6; background-color: #f9fafb; color: #4b5563; font-weight: 700;">
+                      <th style="padding: 10px;">Cleaner</th>
+                      <th style="padding: 10px; text-align: right;">Total Wages</th>
+                      <th style="padding: 10px; text-align: right;">Total Expenses</th>
+                      <th style="padding: 10px; text-align: right;">Total Advances</th>
+                      <th style="padding: 10px; text-align: right; color: #16a34a;">Total Paid</th>
+                      <th style="padding: 10px; text-align: right; font-weight: 800; color: var(--primary);">Current Balance Due</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="b in cleanerCumulativeBalances" :key="b.cleaner.id" style="border-bottom: 1px solid #f3f4f6;" class="hover-row">
+                      <td style="padding: 10px; font-weight: 700; color: var(--primary);">
+                        {{ b.cleaner.name }}
+                      </td>
+                      <td style="padding: 10px; text-align: right; color: #374151;">
+                        €{{ b.totalWages.toFixed(2) }}
+                      </td>
+                      <td style="padding: 10px; text-align: right; color: #2563eb;">
+                        €{{ b.totalExpenses.toFixed(2) }}
+                      </td>
+                      <td style="padding: 10px; text-align: right; color: #dc2626;">
+                        €{{ b.totalAdvances.toFixed(2) }}
+                      </td>
+                      <td style="padding: 10px; text-align: right; font-weight: 700; color: #16a34a;">
+                        €{{ b.totalPaid.toFixed(2) }}
+                      </td>
+                      <td style="padding: 10px; text-align: right; font-weight: 800; font-size: 0.95rem;" :style="{ color: b.accumulatedBalance > 0.01 ? '#d97706' : (b.accumulatedBalance < -0.01 ? '#2563eb' : '#16a34a') }">
+                        €{{ b.accumulatedBalance.toFixed(2) }}
+                        <div style="font-size: 0.65rem; font-weight: 600; margin-top: 0.1rem;">
+                          <span v-if="b.accumulatedBalance > 0.01" style="background: #fffbeb; color: #b45309; padding: 1px 4px; border-radius: 3px;">Pending Payment</span>
+                          <span v-else-if="b.accumulatedBalance < -0.01" style="background: #eff6ff; color: #1d4ed8; padding: 1px 4px; border-radius: 3px;">Overpaid</span>
+                          <span v-else style="background: #f0fdf4; color: #15803d; padding: 1px 4px; border-radius: 3px;">Fully Settled</span>
+                        </div>
+                      </td>
+                    </tr>
+                    <tr v-if="cleanerCumulativeBalances.length === 0">
+                      <td colspan="6" style="text-align: center; padding: 2rem; color: #9ca3af;">No cleaner balances calculated. Add cleaners first.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Payment History Log Card -->
+            <div class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
+              <h3 style="font-size: 1rem; color: var(--primary); font-weight: 700; margin: 0 0 1.25rem 0; display: flex; align-items: center; gap: 0.5rem;">
+                <span class="material-icons-outlined" style="color: #10b981;">history</span>
+                Payment History Log
+              </h3>
+
+              <!-- Filters Row -->
+              <div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; background: #f8fafc; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid #e2e8f0;">
+                <!-- Cleaner Filter -->
+                <div style="display: flex; align-items: center; gap: 0.35rem;">
+                  <label style="font-size: 0.75rem; font-weight: 700; color: #475569; text-transform: uppercase;">Cleaner:</label>
+                  <select v-model="paymentFilterCleanerId" style="padding: 0.35rem 0.5rem; border-radius: 6px; border: 1px solid #cbd5e1; background: white; font-size: 0.82rem; color: #334155; font-weight: 600; cursor: pointer; outline: none;">
+                    <option value="">All Cleaners</option>
+                    <option v-for="c in cleaners" :key="c.id" :value="c.id">{{ c.name }}</option>
+                  </select>
+                </div>
+                <!-- Year Filter -->
+                <div style="display: flex; align-items: center; gap: 0.35rem;">
+                  <label style="font-size: 0.75rem; font-weight: 700; color: #475569; text-transform: uppercase;">Year:</label>
+                  <select v-model="paymentFilterYear" style="padding: 0.35rem 0.5rem; border-radius: 6px; border: 1px solid #cbd5e1; background: white; font-size: 0.82rem; color: #334155; font-weight: 600; cursor: pointer; outline: none;">
+                    <option value="all">All Years</option>
+                    <option v-for="y in [2024, 2025, 2026, 2027, 2028, 2029, 2030]" :key="y" :value="y">{{ y }}</option>
+                  </select>
+                </div>
+                <!-- Month Filter -->
+                <div style="display: flex; align-items: center; gap: 0.35rem;">
+                  <label style="font-size: 0.75rem; font-weight: 700; color: #475569; text-transform: uppercase;">Month:</label>
+                  <select v-model="paymentFilterMonth" style="padding: 0.35rem 0.5rem; border-radius: 6px; border: 1px solid #cbd5e1; background: white; font-size: 0.82rem; color: #334155; font-weight: 600; cursor: pointer; outline: none;">
+                    <option value="all">All Months</option>
+                    <option value="0">January</option>
+                    <option value="1">February</option>
+                    <option value="2">March</option>
+                    <option value="3">April</option>
+                    <option value="4">May</option>
+                    <option value="5">June</option>
+                    <option value="6">July</option>
+                    <option value="7">August</option>
+                    <option value="8">September</option>
+                    <option value="9">October</option>
+                    <option value="10">November</option>
+                    <option value="11">December</option>
+                  </select>
+                </div>
+                <!-- Clear Filters Button -->
+                <button 
+                  v-if="paymentFilterCleanerId || paymentFilterYear !== 'all' || paymentFilterMonth !== 'all'"
+                  @click="paymentFilterCleanerId = ''; paymentFilterYear = 'all'; paymentFilterMonth = 'all';"
+                  style="padding: 0.35rem 0.6rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.8rem; background: white; cursor: pointer; color: #dc2626; font-weight: 700; transition: all 0.2s;"
+                  @mouseenter="$event.target.style.backgroundColor='#fef2f2'"
+                  @mouseleave="$event.target.style.backgroundColor='white'"
+                >
+                  Clear Filters
+                </button>
+              </div>
+
+              <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem; text-align: left;">
+                  <thead>
+                    <tr style="border-bottom: 2px solid #f3f4f6; background-color: #f9fafb; color: #4b5563; font-weight: 700;">
+                      <th style="padding: 10px;">Date</th>
+                      <th style="padding: 10px;">Cleaner</th>
+                      <th style="padding: 10px;">Payment Details</th>
+                      <th style="padding: 10px; text-align: right; color: #10b981;">Amount Paid</th>
+                      <th style="padding: 10px; text-align: center;">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="t in filteredPaymentsHistory" :key="t.id" style="border-bottom: 1px solid #f3f4f6;" class="hover-row">
+                      <td style="padding: 10px; font-weight: 600; color: #374151;">
+                        {{ new Date(t.transaction_date).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) }}
+                      </td>
+                      <td style="padding: 10px; font-weight: 700; color: var(--primary);">
+                        {{ cleaners.find(c => c.id === t.cleaner_id)?.name || '—' }}
+                      </td>
+                      <td style="padding: 10px; color: #4b5563;">
+                        {{ t.description || 'Bank Transfer' }}
+                      </td>
+                      <td style="padding: 10px; text-align: right; font-weight: 700; color: #10b981;">
+                        €{{ parseFloat(t.amount).toFixed(2) }}
+                      </td>
+                      <td style="padding: 10px; text-align: center; display: flex; gap: 0.35rem; justify-content: center; align-items: center;">
+                        <button @click="startEditPayment(t)" class="edit-btn" style="padding: 4px 8px; font-size: 0.75rem; border-radius: 4px; display: inline-flex; align-items: center; gap: 0.25rem;">
+                          <span class="material-icons-outlined" style="font-size: 0.85rem;">edit</span>
+                          Edit
+                        </button>
+                        <button @click="deleteCleanerTransaction(t.id)" class="delete-btn" style="padding: 4px 8px; font-size: 0.75rem; border-radius: 4px; display: inline-flex; align-items: center; gap: 0.25rem;">
+                          <span class="material-icons-outlined" style="font-size: 0.85rem;">delete</span>
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                    <tr v-if="filteredPaymentsHistory.length === 0">
+                      <td colspan="5" style="text-align: center; padding: 2rem; color: #9ca3af;">No payments logged matching selected filters.</td>
+                    </tr>
+                  </tbody>
+                  <tfoot v-if="filteredPaymentsHistory.length > 0">
+                    <tr style="background: #f0fdf4; font-weight: 800; border-top: 1px solid #d1fae5;">
+                      <td colspan="3" style="padding: 10px; color: #15803d;">Total Filtered Payments</td>
+                      <td style="padding: 10px; text-align: right; color: #16a34a; font-size: 0.9rem;">
+                        €{{ filteredPaymentsHistory.reduce((s, t) => s + parseFloat(t.amount || 0), 0).toFixed(2) }}
+                      </td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Record Payment Modal Overlay -->
+          <transition name="fade">
+            <div v-if="showAddPaymentModal" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 9999; padding: 1.5rem;" @click.self="cancelAddPayment">
+              <div style="background: white; border-radius: 16px; width: 100%; max-width: 450px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04); overflow: hidden; display: flex; flex-direction: column;">
+                <!-- Modal Header -->
+                <div style="padding: 1.25rem 1.5rem; background: #10b981; color: white; display: flex; align-items: center; justify-content: space-between;">
+                  <h3 style="margin: 0; font-size: 1.05rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem;">
+                    <span class="material-icons-outlined">add_card</span>
+                    {{ isEditingPayment ? 'Edit Wage Payment' : 'Record Wage Payment' }}
+                  </h3>
+                  <button @click="cancelAddPayment" style="background: none; border: none; color: #a7f3d0; cursor: pointer; display: flex; align-items: center; transition: color 0.15s;" @mouseenter="$event.target.style.color='#fff'" @mouseleave="$event.target.style.color='#a7f3d0'">
+                    <span class="material-icons-outlined" style="font-size: 1.5rem;">close</span>
+                  </button>
+                </div>
+                
+                <!-- Modal Content -->
+                <div style="padding: 1.5rem;">
+                  <form @submit.prevent="addCleanerPayment" style="display: flex; flex-direction: column; gap: 1rem;">
+                    <div>
+                      <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Select Cleaner *</label>
+                      <select v-model="paymentForm.cleaner_id" required style="padding: 0.65rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%; background: #fff; font-weight: 600;">
+                        <option value="" disabled selected>— Select Cleaner —</option>
+                        <option v-for="c in cleaners" :key="c.id" :value="c.id">{{ c.name }}</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Payment Date *</label>
+                      <input v-model="paymentForm.transaction_date" type="date" required style="padding: 0.65rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                    </div>
+
+                    <div>
+                      <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Payment Method *</label>
+                      <select v-model="paymentForm.description" required style="padding: 0.65rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%; background: #fff; font-weight: 600;">
+                        <option value="Bank Transfer">Bank Transfer</option>
+                        <option value="Cash Payment">Cash Payment</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Amount (€) *</label>
+                      <input v-model.number="paymentForm.amount" type="number" min="0.01" step="0.01" placeholder="0.00" required style="padding: 0.65rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%; font-weight: 700;" />
+                    </div>
+
+                    <div>
+                      <label style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.35rem;">Additional Notes (Optional)</label>
+                      <input v-model="paymentForm.notes" type="text" placeholder="e.g. Reference number, invoice ref..." style="padding: 0.65rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                    </div>
+
+                    <button type="submit" class="submit-btn" style="width: 100%; justify-content: center; padding: 0.75rem; margin-top: 0.5rem; font-weight: 700; background-color: #10b981; border-color: #10b981;">
+                      <span class="material-icons-outlined" style="font-size: 1.15rem; margin-right: 0.35rem;">check_circle</span>
+                      {{ isEditingPayment ? 'Save Changes' : 'Log Payment' }}
+                    </button>
+                  </form>
+                </div>
+              </div>
+            </div>
+          </transition>
         </div>
 
         <!-- Reports Tracking View -->
@@ -7455,230 +8245,409 @@ watch(cleaningSelectedDate, () => {
         </div>
 
         <!-- Full-Page Property Details Dashboard (commission split calculations) -->
-        <div v-else-if="currentConciergeView === 'property-details'" class="property-details-dashboard">
-          <div style="display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 2rem; margin-top: 1.5rem; align-items: start;">
+        <div v-else-if="currentConciergeView === 'property-details'" class="property-details-dashboard" style="display: flex; flex-direction: column; gap: 1rem; margin-top: 0.5rem;">
+          
+          <!-- Local Detail Page Header -->
+          <div class="card" style="padding: 1.25rem 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              <button 
+                @click="currentConciergeView = 'calendar'" 
+                class="action-header-btn secondary-btn"
+                style="padding: 0.4rem 0.75rem; font-size: 0.85rem;"
+              >
+                <span class="material-icons-outlined">arrow_back</span>
+                Back to Timeline
+              </button>
+              <h2 style="font-size: 1.3rem; color: var(--primary); font-weight: 800; margin: 0;">
+                {{ selectedConciergeDetailsProperty?.title }} Dashboard
+              </h2>
+            </div>
             
-            <!-- Left: List of Reservations/Bookings -->
-            <div class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; border-bottom: 2px solid #f3f4f6; padding-bottom: 0.5rem;">
-                <h2 style="font-size: 1.2rem; color: var(--primary); font-weight: 700; margin: 0;">
-                  All Bookings & Financial Records
-                </h2>
-                <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
-                  <!-- Period select dropdown -->
-                  <div style="display: flex; align-items: center; gap: 0.35rem; border: 1px solid #e5e7eb; padding: 0.35rem 0.6rem; border-radius: 6px; background: #f9fafb;">
-                    <span style="font-size: 0.75rem; font-weight: 700; color: #4b5563; white-space: nowrap;">Period:</span>
-                    <select v-model="emailReportPeriod.type" style="padding: 0.2rem 0.4rem; border-radius: 4px; border: 1px solid #ddd; background: white; font-size: 0.78rem; font-weight: 600; cursor: pointer; color: #374151;">
-                      <option value="selected">Current Month</option>
-                      <option value="custom">Custom Month</option>
-                      <option value="all">All Time</option>
-                    </select>
-                    
-                    <template v-if="emailReportPeriod.type === 'custom'">
-                      <select v-model="emailReportPeriod.month" style="padding: 0.2rem 0.4rem; border-radius: 4px; border: 1px solid #ddd; background: white; font-size: 0.78rem; font-weight: 600; cursor: pointer; color: #374151;">
-                        <option v-for="(mName, idx) in monthNames" :key="idx" :value="idx">{{ mName }}</option>
-                      </select>
-                      <select v-model="emailReportPeriod.year" style="padding: 0.2rem 0.4rem; border-radius: 4px; border: 1px solid #ddd; background: white; font-size: 0.78rem; font-weight: 600; cursor: pointer; color: #374151;">
-                        <option v-for="y in [2024, 2025, 2026, 2027, 2028, 2029, 2030, 2031, 2032]" :key="y" :value="y">{{ y }}</option>
-                      </select>
-                    </template>
-                  </div>
-
-                  <button
-                    @click="sendOwnerReportEmail"
-                    :disabled="isSendingEmail"
-                    style="padding: 0.45rem 1rem; border: 1.5px solid #2563eb; border-radius: 6px; font-size: 0.8rem; background: #2563eb; color: white; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 0.35rem; font-weight: 700;"
-                  >
-                    <span class="material-icons-outlined" style="font-size: 0.95rem;">mail</span>
-                    {{ isSendingEmail ? 'Sending...' : 'Email to Owner' }}
-                  </button>
-                  <button
-                    @click="exportReservationsToExcel(filteredConciergePropertyBookings, selectedConciergeDetailsProperty.title)"
-                    style="padding: 0.45rem 1rem; border: 1.5px solid #107c41; border-radius: 6px; font-size: 0.8rem; background: #107c41; color: white; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 0.35rem; font-weight: 700;"
-                  >
-                    <span class="material-icons-outlined" style="font-size: 0.95rem;">download_for_offline</span>
-                    Export Excel
-                  </button>
-                </div>
-              </div>
-              
-              <div style="overflow-x: auto;">
-                <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
-                  <thead>
-                    <tr style="border-bottom: 2px solid #f3f4f6; text-align: left; background-color: #f9fafb; color: #4b5563; font-weight: 700;">
-                      <th style="padding: 10px;">Guest / Source</th>
-                      <th style="padding: 10px;">Dates (Nights)</th>
-                      <th style="padding: 10px;">Revenue Split</th>
-                      <th style="padding: 10px; text-align: right;">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="b in filteredConciergePropertyBookings" :key="b.id" style="border-bottom: 1px solid #f3f4f6; transition: background 0.2s; cursor: pointer;" @click="selectBookingForEdit(b)" class="hover-row">
-                      <td style="padding: 10px;">
-                        <strong style="color: var(--primary); font-size: 0.9rem;">{{ b.is_block ? 'Blocked Period' : (b.guest_name || b.summary) }}</strong>
-                        <div v-if="b.notes" style="font-size: 0.76rem; color: #475569; margin-top: 0.15rem; font-style: italic; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" :title="b.notes">
-                          Reason: {{ b.notes }}
-                        </div>
-                        <div style="margin-top: 0.2rem;">
-                          <span class="status-pill" :style="{
-                            backgroundColor: b.is_block ? '#e2e8f0' : (b.source === 'airbnb' ? '#fee2e2' : b.source === 'booking' ? '#dbeafe' : '#ffedd5'),
-                            color: b.is_block ? '#475569' : (b.source === 'airbnb' ? '#991b1b' : b.source === 'booking' ? '#1e40af' : '#9a3412'),
-                            fontSize: '0.7rem',
-                            padding: '2px 6px',
-                            borderRadius: '4px',
-                            fontWeight: '700'
-                          }">
-                            {{ b.is_block ? 'Blocked' : (b.source === 'airbnb' ? 'Airbnb' : b.source === 'booking' ? 'Booking.com' : 'Resaoff') }}
-                          </span>
-                        </div>
-                      </td>
-                      <td style="padding: 10px;">
-                        <span style="font-weight: 600; color: #374151;">{{ formatDateToEU(b.start_date) }} - {{ formatDateToEU(b.end_date) }}</span>
-                        <div style="font-size: 0.75rem; color: #6b7280; margin-top: 0.1rem;">
-                          {{ b.nights || 1 }} {{ b.is_block ? 'days' : 'nights' }}
-                        </div>
-                      </td>
-                      <td style="padding: 10px;">
-                        <template v-if="b.is_block">
-                          <span style="color: #64748b; font-size: 0.8rem; font-weight: 600;">Not available for rent</span>
-                        </template>
-                        <template v-else>
-                          <div style="font-weight: 700; color: #16a34a;">Total: €{{ b.price || 0 }}</div>
-                          <div style="font-size: 0.75rem; color: #4b5563; margin-top: 0.15rem; display: flex; flex-direction: column; gap: 0.1rem;">
-                            <span>Owner: €{{ b.owner_payout || 0 }}</span>
-                            <span>Doorman ({{ b.commission_rate || 20 }}%): €{{ b.doorman_commission || 0 }}</span>
-                          </div>
-                        </template>
-                      </td>
-                      <td style="padding: 10px; text-align: right;" @click.stop>
-                        <button @click="deleteConciergeBookingInDetails(b.id)" class="delete-btn" style="padding: 4px 8px; font-size: 0.75rem; border-radius: 4px; display: inline-flex; align-items: center; gap: 0.25rem;">
-                          <span class="material-icons-outlined" style="font-size: 0.85rem;">delete</span>
-                          Cancel
-                        </button>
-                      </td>
-                    </tr>
-                    <tr v-if="filteredConciergePropertyBookings.length === 0">
-                      <td colspan="4" style="text-align: center; padding: 2rem; color: #9ca3af; font-weight: 600;">No bookings found for this period.</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+            <div style="display: flex; gap: 0.75rem;">
+              <button 
+                @click="startEditConcierge(selectedConciergeDetailsProperty)" 
+                class="action-header-btn"
+                style="background-color: var(--accent); color: var(--primary); font-weight: 700; padding: 0.5rem 1rem;"
+              >
+                <span class="material-icons-outlined" style="margin-right: 0.25rem;">edit</span>
+                Edit Property Info
+              </button>
             </div>
-
-            <!-- Right: Create/Edit Financial Form -->
-            <div class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; border-bottom: 2px solid #f3f4f6; padding-bottom: 0.5rem;">
-                <h2 style="font-size: 1.2rem; color: var(--primary); font-weight: 700; margin: 0;">
-                  {{ bookingForm.id ? 'Edit Reservation' : 'New Reservation' }}
-                </h2>
-                <button v-if="bookingForm.id" @click="resetBookingForm" class="edit-btn" style="padding: 2px 8px; font-size: 0.75rem;">
-                  Clear Form
-                </button>
-              </div>
-
-              <form @submit.prevent="saveAdvancedBooking" style="display: flex; flex-direction: column; gap: 1.25rem;">
-                <!-- Block Calendar Checkbox -->
-                <div style="background-color: #f3f4f6; padding: 0.6rem 1rem; border-radius: 8px;">
-                  <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 0.85rem; color: var(--primary); cursor: pointer; margin: 0;">
-                    <input type="checkbox" v-model="bookingForm.is_block" style="width: 16px; height: 16px; cursor: pointer;" />
-                    Block Calendar (Owner / Maintenance)
-                  </label>
-                </div>
-
-                <!-- Platform Select -->
-                <div v-if="!bookingForm.is_block" class="filter-group">
-                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Platform / Source</label>
-                  <select v-model="bookingForm.platform" :required="!bookingForm.is_block" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background: white; width: 100%;">
-                    <option value="airbnb">Airbnb</option>
-                    <option value="booking">Booking.com</option>
-                    <option value="resaoff">Resaoff (Offline Direct)</option>
-                  </select>
-                </div>
-
-                <!-- Guest Name -->
-                <div v-if="!bookingForm.is_block" class="filter-group">
-                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Guest Name (First & Last)</label>
-                  <input v-model="bookingForm.guest_name" type="text" :required="!bookingForm.is_block" placeholder="e.g. John Doe" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
-                </div>
-
-                <!-- Date grid -->
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                  <div class="filter-group">
-                    <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">{{ bookingForm.is_block ? 'Block Start Date' : 'Check-in Date' }}</label>
-                    <input v-model="bookingForm.start_date" type="date" required style="padding: 0.6rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
-                  </div>
-                  <div class="filter-group">
-                    <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">{{ bookingForm.is_block ? 'Block End Date' : 'Check-out Date' }}</label>
-                    <input v-model="bookingForm.end_date" type="date" required style="padding: 0.6rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
-                  </div>
-                </div>
-
-                <!-- Nights (Auto-calculated) -->
-                <div class="filter-group">
-                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">{{ bookingForm.is_block ? 'Blocked Days (Auto-calculated)' : 'Nights Stayed (Auto-calculated)' }}</label>
-                  <input :value="nightsCount" type="text" disabled style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background-color: #f3f4f6; color: #4b5563; font-weight: 600; width: 100%;" />
-                </div>
-
-                <!-- Financial Inputs Grid -->
-                <div v-if="!bookingForm.is_block" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                  <div class="filter-group">
-                    <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Total Gross Price (€)</label>
-                    <input v-model.number="bookingForm.price" type="number" step="0.01" :required="!bookingForm.is_block" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
-                  </div>
-                  <div class="filter-group">
-                    <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Platform Service Fee (€)</label>
-                    <input v-model.number="bookingForm.platform_fee" type="number" step="0.01" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
-                  </div>
-                </div>
-
-                <!-- Commission Rate -->
-                <div v-if="!bookingForm.is_block" class="filter-group">
-                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Doorman Commission Rate (%)</label>
-                  <input v-model.number="bookingForm.commission_rate" type="number" step="0.1" :required="!bookingForm.is_block" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
-                </div>
-
-                <!-- Notes (Max 100 characters) -->
-                <div class="filter-group">
-                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">{{ bookingForm.is_block ? 'Block Reason / Notes' : 'Notes (Max 100 chars)' }}</label>
-                  <input v-model="bookingForm.notes" type="text" maxlength="100" placeholder="e.g. Owner stay, renovation, pipe repair..." style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
-                </div>
-
-                <!-- Live calculations / Split Breakdown panel -->
-                <div v-if="!bookingForm.is_block" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.75rem;">
-                  <h3 style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; color: #64748b; margin: 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.25rem;">
-                    Dynamic Payout Split
-                  </h3>
-
-                  <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
-                    <span style="color: #475569;">Nightly Rate (Avg):</span>
-                    <strong style="color: #0f172a;">€{{ payoutBreakdown.nightly }} / night</strong>
-                  </div>
-                  
-                  <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
-                    <span style="color: #475569;">Net Income (Gross - Fee):</span>
-                    <strong style="color: #0f172a;">€{{ payoutBreakdown.net }}</strong>
-                  </div>
-
-                  <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
-                    <span style="color: #475569;">Owner Share:</span>
-                    <strong style="color: #475569;">€{{ payoutBreakdown.owner }}</strong>
-                  </div>
-
-                  <div style="display: flex; justify-content: space-between; font-size: 0.9rem; border-top: 1px dashed #cbd5e1; padding-top: 0.5rem;">
-                    <span style="color: #0f172a; font-weight: 700;">Doorman Payout ({{ bookingForm.commission_rate }}%):</span>
-                    <strong style="color: #0f172a; font-weight: 800; font-size: 1rem;">€{{ payoutBreakdown.doorman }}</strong>
-                  </div>
-                </div>
-
-                <!-- Submit Action -->
-                <button type="submit" class="submit-btn" style="width: 100%; padding: 0.8rem; justify-content: center; font-weight: 700; margin-top: 0.5rem;">
-                  <span class="material-icons-outlined" style="margin-right: 0.5rem;">save</span>
-                  {{ bookingForm.id ? 'Update Reservation' : 'Save Reservation' }}
-                </button>
-              </form>
-            </div>
-
           </div>
+
+          <!-- Tab Switcher Navigation -->
+          <div style="display: flex; gap: 0.5rem; border-bottom: 2px solid #e2e8f0; padding-bottom: 0.25rem; margin-top: 0.5rem; margin-bottom: 1rem;">
+            <button 
+              @click="propertyDetailsTab = 'calendar'" 
+              style="padding: 0.6rem 1.25rem; font-weight: 700; border: none; background: none; cursor: pointer; font-size: 0.9rem; transition: all 0.2s; display: flex; align-items: center; gap: 0.35rem;" 
+              :style="propertyDetailsTab === 'calendar' ? 'color: var(--primary); border-bottom: 3px solid var(--accent);' : 'color: #94a3b8;'"
+            >
+              <span class="material-icons-outlined" style="font-size: 1.1rem;">calendar_month</span>
+              Property Calendar
+            </button>
+            <button 
+              @click="propertyDetailsTab = 'bookings'" 
+              style="padding: 0.6rem 1.25rem; font-weight: 700; border: none; background: none; cursor: pointer; font-size: 0.9rem; transition: all 0.2s; display: flex; align-items: center; gap: 0.35rem;" 
+              :style="propertyDetailsTab === 'bookings' ? 'color: var(--primary); border-bottom: 3px solid var(--accent);' : 'color: #94a3b8;'"
+            >
+              <span class="material-icons-outlined" style="font-size: 1.1rem;">receipt_long</span>
+              Bookings & Financials
+            </button>
+            <button 
+              @click="propertyDetailsTab = 'reservation-form'" 
+              style="padding: 0.6rem 1.25rem; font-weight: 700; border: none; background: none; cursor: pointer; font-size: 0.9rem; transition: all 0.2s; display: flex; align-items: center; gap: 0.35rem;" 
+              :style="propertyDetailsTab === 'reservation-form' ? 'color: var(--primary); border-bottom: 3px solid var(--accent);' : 'color: #94a3b8;'"
+            >
+              <span class="material-icons-outlined" style="font-size: 1.1rem;">{{ bookingForm.id ? 'edit_calendar' : 'add_moderator' }}</span>
+              {{ bookingForm.id ? 'Edit Reservation' : 'New Reservation' }}
+            </button>
+          </div>
+
+          <!-- TAB CONTENT BLOCKS -->
+          
+          <!-- TAB 1: DEDICATED CALENDAR -->
+          <div v-if="propertyDetailsTab === 'calendar'" class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
+            <!-- Monthly Controls -->
+            <div class="calendar-controls-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
+              <div style="display: flex; align-items: center; gap: 0.75rem;">
+                <button
+                  @click="scrollToToday"
+                  style="padding: 0.45rem 1rem; border: 1.5px solid var(--accent); background: var(--accent); color: var(--primary); border-radius: 6px; cursor: pointer; font-weight: 700; font-size: 0.85rem; display: flex; align-items: center; gap: 0.35rem; transition: opacity 0.15s;"
+                  @mouseenter="$event.target.style.opacity='0.85'"
+                  @mouseleave="$event.target.style.opacity='1'"
+                >
+                  <span class="material-icons-outlined" style="font-size: 1rem;">today</span>
+                  Today
+                </button>
+                <div class="calendar-nav" style="display: flex; align-items: center; gap: 0.75rem;">
+                  <button @click="prevMonth" class="action-btn" style="padding: 0.5rem; border: 1px solid #eee; background: white; border-radius: 6px; cursor: pointer; display: flex; align-items: center;">
+                    <span class="material-icons-outlined">chevron_left</span>
+                  </button>
+                  <select v-model="currentMonth" style="padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #eee; background: white; font-weight: 600; color: var(--primary); cursor: pointer; font-size: 0.9rem;">
+                    <option v-for="(mName, idx) in monthNames" :key="idx" :value="idx">{{ mName }}</option>
+                  </select>
+                  <select v-model="currentYear" style="padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #eee; background: white; font-weight: 600; color: var(--primary); cursor: pointer; font-size: 0.9rem;">
+                    <option v-for="y in [2024, 2025, 2026, 2027, 2028, 2029, 2030, 2031, 2032]" :key="y" :value="y">{{ y }}</option>
+                  </select>
+                  <button @click="nextMonth" class="action-btn" style="padding: 0.5rem; border: 1px solid #eee; background: white; border-radius: 6px; cursor: pointer; display: flex; align-items: center;">
+                    <span class="material-icons-outlined">chevron_right</span>
+                  </button>
+                </div>
+              </div>
+              <div style="font-size: 0.82rem; color: #6b7280; font-weight: 600;">
+                <span class="material-icons-outlined" style="font-size: 1rem; vertical-align: middle; margin-right: 0.25rem; color: var(--accent);">info</span>
+                Click a free day to add a reservation, or click a booking pill to edit/cancel.
+              </div>
+            </div>
+
+            <!-- Monthly Grid Calendar (Traditional View) -->
+            <div class="monthly-grid-calendar-container" style="background: white; border: 1.5px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.03);">
+              
+              <!-- Weekday Header Row -->
+              <div class="grid-header" style="display: grid; grid-template-columns: repeat(7, 1fr); background: #f8fafc; border-bottom: 1.5px solid #e2e8f0; text-align: center; font-weight: 700; font-size: 0.85rem; color: #475569; min-height: 40px; align-items: center;">
+                <div style="padding: 0.5rem; border-right: 1px solid #e2e8f0;">Monday</div>
+                <div style="padding: 0.5rem; border-right: 1px solid #e2e8f0;">Tuesday</div>
+                <div style="padding: 0.5rem; border-right: 1px solid #e2e8f0;">Wednesday</div>
+                <div style="padding: 0.5rem; border-right: 1px solid #e2e8f0;">Thursday</div>
+                <div style="padding: 0.5rem; border-right: 1px solid #e2e8f0;">Friday</div>
+                <div style="padding: 0.5rem; border-right: 1px solid #e2e8f0; color: #dc2626;">Saturday</div>
+                <div style="padding: 0.5rem; color: #dc2626;">Sunday</div>
+              </div>
+
+              <!-- Weeks & Days Grid -->
+              <div style="display: flex; flex-direction: column;">
+                <div 
+                  v-for="(week, wIdx) in propertyCalendarWeeks" 
+                  :key="wIdx" 
+                  style="display: grid; grid-template-columns: repeat(7, 1fr); border-bottom: 1px solid #e2e8f0;"
+                  :style="wIdx === propertyCalendarWeeks.length - 1 ? 'border-bottom: none;' : ''"
+                >
+                  <div 
+                    v-for="(day, dIdx) in week" 
+                    :key="dIdx"
+                    @click="handlePropertyDetailsCellClick(selectedConciergeDetailsProperty, day.date)"
+                    style="min-height: 130px; padding: 0.5rem; border-right: 1px solid #e2e8f0; display: flex; flex-direction: column; cursor: pointer; transition: background 0.15s; position: relative;"
+                    :style="[
+                      dIdx === 6 ? 'border-right: none;' : '',
+                      !day.isCurrentMonth ? 'background-color: #f8fafc; opacity: 0.55;' : 'background-color: white;',
+                      isToday(day.date) ? 'background-color: #eff6ff;' : '',
+                      isCellSelected(selectedConciergeDetailsProperty, day.date) ? 'background-color: rgba(245, 158, 11, 0.25) !important; outline: 1.5px solid var(--accent); z-index: 5;' : ''
+                    ]"
+                    @mouseenter="selectionState.startDate ? (selectionState.hoverDate = day.date) : ($event.currentTarget.style.backgroundColor = isToday(day.date) ? '#dbeafe' : '#f1f5f9')"
+                    @mouseleave="selectionState.startDate ? null : ($event.currentTarget.style.backgroundColor = !day.isCurrentMonth ? '#f8fafc' : (isToday(day.date) ? '#eff6ff' : 'white'))"
+                  >
+                    <!-- Day Number & Indicators -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                      <span 
+                        style="font-size: 0.9rem; font-weight: 700; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%;"
+                        :style="isToday(day.date) ? 'background-color: var(--accent); color: var(--primary); font-weight: 800; box-shadow: 0 1px 3px rgba(0,0,0,0.1);' : (day.date.getDay() === 0 || day.date.getDay() === 6 ? 'color: #dc2626;' : 'color: #475569;')"
+                      >
+                        {{ day.date.getDate() }}
+                      </span>
+                    </div>
+
+                    <!-- Booking pills overlay inside the cell (night-based split style) -->
+                    <div style="position: absolute; left: 0; right: 0; top: 40px; bottom: 8px; pointer-events: none;">
+                      <div 
+                        v-for="state in getBookingsForDay(selectedConciergeDetailsProperty, day.date)"
+                        :key="state.booking.id"
+                        class="booking-pill-bar"
+                        :class="{
+                          'booking-start': state.isStart,
+                          'booking-end': state.isEnd
+                        }"
+                        :title="`${selectedConciergeDetailsProperty.title}: ${state.booking.summary}`"
+                        @click.stop="selectBookingForEdit(state.booking)"
+                        style="position: absolute; top: 0; bottom: 0; margin-top: auto; margin-bottom: auto; height: 38px; font-weight: 700; font-size: 0.72rem; display: flex; align-items: center; justify-content: flex-start; border-top: 1px solid rgba(255,255,255,0.25); border-bottom: 1px solid rgba(0,0,0,0.12); box-shadow: 0 2px 4px rgba(0,0,0,0.06); border-radius: 6px; z-index: 10; pointer-events: auto; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                        :style="getBookingBarStyle(state.booking, state.isStart, state.isEnd, getBookingsForDay(selectedConciergeDetailsProperty, day.date))"
+                      >
+                        <!-- Display guest name / summary inside the pill -->
+                        <span 
+                          v-if="state.isStart" 
+                          style="padding: 0 8px; font-size: 0.7rem; font-weight: 800; white-space: nowrap; pointer-events: none;"
+                        >
+                          🔑 {{ state.booking.summary }}
+                        </span>
+                        <span 
+                          v-else-if="!state.isEnd" 
+                          style="padding: 0 8px; font-size: 0.7rem; font-weight: 800; white-space: nowrap; pointer-events: none;"
+                        >
+                          🛏️ {{ state.booking.summary }}
+                        </span>
+                        <span 
+                          v-else 
+                          style="padding: 0 8px; font-size: 0.7rem; font-weight: 800; white-space: nowrap; pointer-events: none;"
+                        >
+                          🚪 OUT
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 2: BOOKINGS LIST -->
+          <div v-else-if="propertyDetailsTab === 'bookings'" class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; border-bottom: 2px solid #f3f4f6; padding-bottom: 0.5rem; flex-wrap: wrap; gap: 1rem;">
+              <h2 style="font-size: 1.2rem; color: var(--primary); font-weight: 700; margin: 0;">
+                All Bookings & Financial Records
+              </h2>
+              <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                <!-- Period select dropdown -->
+                <div style="display: flex; align-items: center; gap: 0.35rem; border: 1px solid #e5e7eb; padding: 0.35rem 0.6rem; border-radius: 6px; background: #f9fafb;">
+                  <span style="font-size: 0.75rem; font-weight: 700; color: #4b5563; white-space: nowrap;">Period:</span>
+                  <select v-model="emailReportPeriod.type" style="padding: 0.2rem 0.4rem; border-radius: 4px; border: 1px solid #ddd; background: white; font-size: 0.78rem; font-weight: 600; cursor: pointer; color: #374151;">
+                    <option value="selected">Current Month</option>
+                    <option value="custom">Custom Month</option>
+                    <option value="all">All Time</option>
+                  </select>
+                  
+                  <template v-if="emailReportPeriod.type === 'custom'">
+                    <select v-model="emailReportPeriod.month" style="padding: 0.2rem 0.4rem; border-radius: 4px; border: 1px solid #ddd; background: white; font-size: 0.78rem; font-weight: 600; cursor: pointer; color: #374151;">
+                      <option v-for="(mName, idx) in monthNames" :key="idx" :value="idx">{{ mName }}</option>
+                    </select>
+                    <select v-model="emailReportPeriod.year" style="padding: 0.2rem 0.4rem; border-radius: 4px; border: 1px solid #ddd; background: white; font-size: 0.78rem; font-weight: 600; cursor: pointer; color: #374151;">
+                      <option v-for="y in [2024, 2025, 2026, 2027, 2028, 2029, 2030, 2031, 2032]" :key="y" :value="y">{{ y }}</option>
+                    </select>
+                  </template>
+                </div>
+
+                <button
+                  @click="sendOwnerReportEmail"
+                  :disabled="isSendingEmail"
+                  style="padding: 0.45rem 1rem; border: 1.5px solid #2563eb; border-radius: 6px; font-size: 0.8rem; background: #2563eb; color: white; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 0.35rem; font-weight: 700;"
+                >
+                  <span class="material-icons-outlined" style="font-size: 0.95rem;">mail</span>
+                  {{ isSendingEmail ? 'Sending...' : 'Email to Owner' }}
+                </button>
+                <button
+                  @click="exportReservationsToExcel(filteredConciergePropertyBookings, selectedConciergeDetailsProperty.title)"
+                  style="padding: 0.45rem 1rem; border: 1.5px solid #107c41; border-radius: 6px; font-size: 0.8rem; background: #107c41; color: white; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 0.35rem; font-weight: 700;"
+                >
+                  <span class="material-icons-outlined" style="font-size: 0.95rem;">download_for_offline</span>
+                  Export Excel
+                </button>
+              </div>
+            </div>
+            
+            <div style="overflow-x: auto;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                <thead>
+                  <tr style="border-bottom: 2px solid #f3f4f6; text-align: left; background-color: #f9fafb; color: #4b5563; font-weight: 700;">
+                    <th style="padding: 10px;">Guest / Source</th>
+                    <th style="padding: 10px;">Dates (Nights)</th>
+                    <th style="padding: 10px;">Revenue Split</th>
+                    <th style="padding: 10px; text-align: right;">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="b in filteredConciergePropertyBookings" :key="b.id" style="border-bottom: 1px solid #f3f4f6; transition: background 0.2s; cursor: pointer;" @click="selectBookingForEdit(b)" class="hover-row">
+                    <td style="padding: 10px;">
+                      <strong style="color: var(--primary); font-size: 0.9rem;">{{ b.is_block ? 'Blocked Period' : (b.guest_name || b.summary) }}</strong>
+                      <div v-if="b.notes" style="font-size: 0.76rem; color: #475569; margin-top: 0.15rem; font-style: italic; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" :title="b.notes">
+                        Reason: {{ b.notes }}
+                      </div>
+                      <div style="margin-top: 0.2rem;">
+                        <span class="status-pill" :style="{
+                          backgroundColor: b.is_block ? '#e2e8f0' : (b.source === 'airbnb' ? '#fee2e2' : b.source === 'booking' ? '#dbeafe' : '#ffedd5'),
+                          color: b.is_block ? '#475569' : (b.source === 'airbnb' ? '#991b1b' : b.source === 'booking' ? '#1e40af' : '#9a3412'),
+                          fontSize: '0.7rem',
+                          padding: '2px 6px',
+                          borderRadius: '4px',
+                          fontWeight: '700'
+                        }">
+                          {{ b.is_block ? 'Blocked' : (b.source === 'airbnb' ? 'Airbnb' : b.source === 'booking' ? 'Booking.com' : 'Resaoff') }}
+                        </span>
+                      </div>
+                    </td>
+                    <td style="padding: 10px;">
+                      <span style="font-weight: 600; color: #374151;">{{ formatDateToEU(b.start_date) }} - {{ formatDateToEU(b.end_date) }}</span>
+                      <div style="font-size: 0.75rem; color: #6b7280; margin-top: 0.1rem;">
+                        {{ b.nights || 1 }} {{ b.is_block ? 'days' : 'nights' }}
+                      </div>
+                    </td>
+                    <td style="padding: 10px;">
+                      <template v-if="b.is_block">
+                        <span style="color: #64748b; font-size: 0.8rem; font-weight: 600;">Not available for rent</span>
+                      </template>
+                      <template v-else>
+                        <div style="font-weight: 700; color: #16a34a;">Total: €{{ b.price || 0 }}</div>
+                        <div style="font-size: 0.75rem; color: #4b5563; margin-top: 0.15rem; display: flex; flex-direction: column; gap: 0.1rem;">
+                          <span>Owner: €{{ b.owner_payout || 0 }}</span>
+                          <span>Doorman ({{ b.commission_rate || 20 }}%): €{{ b.doorman_commission || 0 }}</span>
+                        </div>
+                      </template>
+                    </td>
+                    <td style="padding: 10px; text-align: right;" @click.stop>
+                      <button @click="deleteConciergeBookingInDetails(b.id)" class="delete-btn" style="padding: 4px 8px; font-size: 0.75rem; border-radius: 4px; display: inline-flex; align-items: center; gap: 0.25rem;">
+                        <span class="material-icons-outlined" style="font-size: 0.85rem;">delete</span>
+                        Cancel
+                      </button>
+                    </td>
+                  </tr>
+                  <tr v-if="filteredConciergePropertyBookings.length === 0">
+                    <td colspan="4" style="text-align: center; padding: 2rem; color: #9ca3af; font-weight: 600;">No bookings found for this period.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- TAB 3: RESERVATION FORM -->
+          <div v-else-if="propertyDetailsTab === 'reservation-form'" class="card" style="padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02); max-width: 600px; margin: 0 auto; width: 100%;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; border-bottom: 2px solid #f3f4f6; padding-bottom: 0.5rem;">
+              <h2 style="font-size: 1.2rem; color: var(--primary); font-weight: 700; margin: 0;">
+                {{ bookingForm.id ? 'Edit Reservation' : 'New Reservation' }}
+              </h2>
+              <button v-if="bookingForm.id" @click="resetBookingForm" class="edit-btn" style="padding: 2px 8px; font-size: 0.75rem;">
+                Clear Form
+              </button>
+            </div>
+
+            <form @submit.prevent="saveAdvancedBooking" style="display: flex; flex-direction: column; gap: 1.25rem;">
+              <!-- Block Calendar Checkbox -->
+              <div style="background-color: #f3f4f6; padding: 0.6rem 1rem; border-radius: 8px;">
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 0.85rem; color: var(--primary); cursor: pointer; margin: 0;">
+                  <input type="checkbox" v-model="bookingForm.is_block" style="width: 16px; height: 16px; cursor: pointer;" />
+                  Block Calendar (Owner / Maintenance)
+                </label>
+              </div>
+
+              <!-- Platform Select -->
+              <div v-if="!bookingForm.is_block" class="filter-group">
+                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Platform / Source</label>
+                <select v-model="bookingForm.platform" :required="!bookingForm.is_block" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background: white; width: 100%;">
+                  <option value="airbnb">Airbnb</option>
+                  <option value="booking">Booking.com</option>
+                  <option value="resaoff">Resaoff (Offline Direct)</option>
+                </select>
+              </div>
+
+              <!-- Guest Name -->
+              <div v-if="!bookingForm.is_block" class="filter-group">
+                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Guest Name (First & Last)</label>
+                <input v-model="bookingForm.guest_name" type="text" :required="!bookingForm.is_block" placeholder="e.g. John Doe" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+              </div>
+
+              <!-- Date grid -->
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="filter-group">
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">{{ bookingForm.is_block ? 'Block Start Date' : 'Check-in Date' }}</label>
+                  <input v-model="bookingForm.start_date" type="date" required style="padding: 0.6rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                </div>
+                <div class="filter-group">
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">{{ bookingForm.is_block ? 'Block End Date' : 'Check-out Date' }}</label>
+                  <input v-model="bookingForm.end_date" type="date" required style="padding: 0.6rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                </div>
+              </div>
+
+              <!-- Nights (Auto-calculated) -->
+              <div class="filter-group">
+                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">{{ bookingForm.is_block ? 'Blocked Days (Auto-calculated)' : 'Nights Stayed (Auto-calculated)' }}</label>
+                <input :value="nightsCount" type="text" disabled style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; background-color: #f3f4f6; color: #4b5563; font-weight: 600; width: 100%;" />
+              </div>
+
+              <!-- Financial Inputs Grid -->
+              <div v-if="!bookingForm.is_block" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="filter-group">
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Total Gross Price (€)</label>
+                  <input v-model.number="bookingForm.price" type="number" step="0.01" :required="!bookingForm.is_block" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                </div>
+                <div class="filter-group">
+                  <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Platform Service Fee (€)</label>
+                  <input v-model.number="bookingForm.platform_fee" type="number" step="0.01" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+                </div>
+              </div>
+
+              <!-- Commission Rate -->
+              <div v-if="!bookingForm.is_block" class="filter-group">
+                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">Doorman Commission Rate (%)</label>
+                <input v-model.number="bookingForm.commission_rate" type="number" step="0.1" :required="!bookingForm.is_block" style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+              </div>
+
+              <!-- Notes (Max 100 characters) -->
+              <div class="filter-group">
+                <label style="font-weight: 700; font-size: 0.75rem; color: #4b5563; text-transform: uppercase;">{{ bookingForm.is_block ? 'Block Reason / Notes' : 'Notes (Max 100 chars)' }}</label>
+                <input v-model="bookingForm.notes" type="text" maxlength="100" placeholder="e.g. Owner stay, renovation, pipe repair..." style="padding: 0.6rem 1rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; width: 100%;" />
+              </div>
+
+              <!-- Live calculations / Split Breakdown panel -->
+              <div v-if="!bookingForm.is_block" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.75rem;">
+                <h3 style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; color: #64748b; margin: 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.25rem;">
+                  Dynamic Payout Split
+                </h3>
+
+                <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
+                  <span style="color: #475569;">Nightly Rate (Avg):</span>
+                  <strong style="color: #0f172a;">€{{ payoutBreakdown.nightly }} / night</strong>
+                </div>
+                
+                <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
+                  <span style="color: #475569;">Net Income (Gross - Fee):</span>
+                  <strong style="color: #0f172a;">€{{ payoutBreakdown.net }}</strong>
+                </div>
+
+                <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
+                  <span style="color: #475569;">Owner Share:</span>
+                  <strong style="color: #475569;">€{{ payoutBreakdown.owner }}</strong>
+                </div>
+
+                <div style="display: flex; justify-content: space-between; font-size: 0.9rem; border-top: 1px dashed #cbd5e1; padding-top: 0.5rem;">
+                  <span style="color: #0f172a; font-weight: 700;">Doorman Payout ({{ bookingForm.commission_rate }}%):</span>
+                  <strong style="color: #0f172a; font-weight: 800; font-size: 1rem;">€{{ payoutBreakdown.doorman }}</strong>
+                </div>
+              </div>
+
+              <!-- Submit Action -->
+              <button type="submit" class="submit-btn" style="width: 100%; padding: 0.8rem; justify-content: center; font-weight: 700; margin-top: 0.5rem;">
+                <span class="material-icons-outlined" style="margin-right: 0.5rem;">save</span>
+                {{ bookingForm.id ? 'Update Reservation' : 'Save Reservation' }}
+              </button>
+            </form>
+          </div>
+
         </div>
       </div>
       </div>
@@ -8941,5 +9910,67 @@ watch(cleaningSelectedDate, () => {
 .booking-pill-bar:hover {
   filter: brightness(0.9);
   transform: scaleY(1.05);
+}
+
+/* Navigation Hover Dropdown Styles */
+.nav-dropdown-wrapper {
+  position: relative;
+  display: inline-block;
+  z-index: 100;
+}
+
+.nav-dropdown-wrapper:hover .nav-dropdown-menu {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.nav-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 0.5rem;
+  min-width: 210px;
+  background-color: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(10px);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  z-index: 999;
+}
+
+.nav-dropdown-menu a {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  color: #4b5563;
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.nav-dropdown-menu a:hover {
+  background-color: #f3f4f6;
+  color: var(--primary);
+}
+
+.nav-dropdown-menu a.active {
+  background-color: #eff6ff;
+  color: #2563eb;
+}
+
+.nav-dropdown-menu a .material-icons-outlined {
+  font-size: 1.15rem;
 }
 </style>
