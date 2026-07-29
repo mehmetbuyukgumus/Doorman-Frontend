@@ -563,11 +563,14 @@ const editAssignmentForm = ref({
   hourly_rate: null,
   max_cleaning_duration: null,
   airbnb_cleaning_fee: null,
-  // Extra transactions to add alongside the assignment edit
+  // Extra transactions linked to the assignment edit
+  other_amount: null,
   market_amount: null,
   laundry_amount: null,
-  advance_amount: null,
-  expense_description: ""
+  expense_description: "",
+  original_cleaner_id: null,
+  original_property_id: null,
+  original_date: ""
 });
 
 const startEditCleaningAssignment = (row) => {
@@ -580,12 +583,69 @@ const startEditCleaningAssignment = (row) => {
     hourly_rate: row.rate,
     max_cleaning_duration: row.duration,
     airbnb_cleaning_fee: row.airbnb_fee,
+    other_amount: row.other_expense > 0 ? row.other_expense : null,
     market_amount: row.market_expense > 0 ? row.market_expense : null,
     laundry_amount: row.laundry_expense > 0 ? row.laundry_expense : null,
-    advance_amount: row.advance > 0 ? row.advance : null,
-    expense_description: ""
+    expense_description: "",
+    original_cleaner_id: row.cleaner_id,
+    original_property_id: row.property_id,
+    original_date: row.date
   };
   showEditAssignmentModal.value = true;
+};
+
+const replaceCleaningAssignmentTransaction = async ({ headers, type, amount, cleanerId, propertyId, txDate, description }) => {
+  const originalDate = editAssignmentForm.value.original_date || editAssignmentForm.value.date;
+  const originalCleanerId = parseInt(editAssignmentForm.value.original_cleaner_id || editAssignmentForm.value.cleaner_id);
+  const originalPropertyId = parseInt(editAssignmentForm.value.original_property_id || editAssignmentForm.value.property_id);
+  const originalDateStr = originalDate ? new Date(originalDate).toISOString().slice(0, 10) : txDate;
+
+  const existingTransactions = cleanerTransactions.value.filter((t) => {
+    const transactionDate = t.transaction_date ? new Date(t.transaction_date).toISOString().slice(0, 10) : "";
+    return (
+      t.type === type &&
+      t.cleaner_id === originalCleanerId &&
+      parseInt(t.property_id || 0) === originalPropertyId &&
+      transactionDate === originalDateStr
+    );
+  });
+
+  const payload = {
+    type,
+    amount,
+    cleaner_id: cleanerId,
+    property_id: propertyId,
+    transaction_date: txDate,
+    description
+  };
+  
+  if (amount > 0) {
+    const primaryTransaction = existingTransactions[0];
+    const saveRes = await fetch(
+      primaryTransaction ? `${backendUrl}/cleaner-transactions/${primaryTransaction.id}` : `${backendUrl}/cleaner-transactions/`,
+      {
+        method: primaryTransaction ? "PUT" : "POST",
+        headers,
+        body: JSON.stringify(payload)
+      }
+    );
+    if (!saveRes.ok) {
+      const errData = await saveRes.json().catch(() => ({}));
+      throw new Error(errData.detail || `Failed to save ${type} transaction.`);
+    }
+  }
+
+  const transactionsToDelete = amount > 0 ? existingTransactions.slice(1) : existingTransactions;
+  for (const tx of transactionsToDelete) {
+    const deleteRes = await fetch(`${backendUrl}/cleaner-transactions/${tx.id}`, {
+      method: "DELETE",
+      headers: { Authorization: headers.Authorization }
+    });
+    if (!deleteRes.ok && deleteRes.status !== 204) {
+      const errData = await deleteRes.json().catch(() => ({}));
+      throw new Error(errData.detail || `Failed to delete old ${type} transaction.`);
+    }
+  }
 };
 
 const saveEditedCleaningAssignment = async () => {
@@ -615,7 +675,7 @@ const saveEditedCleaningAssignment = async () => {
       return;
     }
 
-    // 2. Save optional extra transactions (market, laundry, advance)
+    // 2. Replace linked extra transactions instead of adding duplicate rows
     const txDate = editAssignmentForm.value.date
       ? new Date(editAssignmentForm.value.date).toISOString().slice(0, 10)
       : new Date().toISOString().slice(0, 10);
@@ -623,22 +683,19 @@ const saveEditedCleaningAssignment = async () => {
     const propertyId = parseInt(editAssignmentForm.value.property_id);
     const desc = editAssignmentForm.value.expense_description?.trim() || null;
 
-    const extras = [];
-    if (editAssignmentForm.value.market_amount > 0) {
-      extras.push({ type: 'market', amount: parseFloat(editAssignmentForm.value.market_amount), cleaner_id: cleanerId, property_id: propertyId, transaction_date: txDate, description: desc });
-    }
-    if (editAssignmentForm.value.laundry_amount > 0) {
-      extras.push({ type: 'laundry', amount: parseFloat(editAssignmentForm.value.laundry_amount), cleaner_id: cleanerId, property_id: propertyId, transaction_date: txDate, description: desc });
-    }
-    if (editAssignmentForm.value.advance_amount > 0) {
-      extras.push({ type: 'advance', amount: parseFloat(editAssignmentForm.value.advance_amount), cleaner_id: cleanerId, property_id: propertyId, transaction_date: txDate, description: desc });
-    }
-
-    for (const tx of extras) {
-      await fetch(`${backendUrl}/cleaner-transactions/`, {
-        method: "POST",
+    for (const item of [
+      { type: 'expense', amount: parseFloat(editAssignmentForm.value.other_amount || 0) },
+      { type: 'market', amount: parseFloat(editAssignmentForm.value.market_amount || 0) },
+      { type: 'laundry', amount: parseFloat(editAssignmentForm.value.laundry_amount || 0) }
+    ]) {
+      await replaceCleaningAssignmentTransaction({
         headers,
-        body: JSON.stringify(tx)
+        type: item.type,
+        amount: item.amount,
+        cleanerId,
+        propertyId,
+        txDate,
+        description: desc
       });
     }
 
@@ -7829,10 +7886,17 @@ watch(cleaningSelectedDate, () => {
                       <div style="border-top: 1.5px dashed #e2e8f0; padding-top: 1rem; margin-top: 0.25rem;">
                         <p style="font-size: 0.75rem; font-weight: 800; text-transform: uppercase; color: #475569; margin: 0 0 0.75rem 0; display: flex; align-items: center; gap: 0.4rem;">
                           <span class="material-icons-outlined" style="font-size: 1rem; color: #0284c7;">receipt_long</span>
-                          Expenses &amp; Advance (will be saved as transactions)
+                          Expenses (will be saved as transactions)
                         </p>
 
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+                          <div>
+                            <label style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #7c3aed; display: block; margin-bottom: 0.3rem;">
+                              <span class="material-icons-outlined" style="font-size: 0.85rem; vertical-align: middle;">receipt</span>
+                              Other (€)
+                            </label>
+                            <input v-model.number="editAssignmentForm.other_amount" type="number" min="0" step="0.01" placeholder="0.00" style="padding: 0.6rem; border: 1px solid #ddd6fe; border-radius: 8px; font-size: 0.9rem; width: 100%; background: #faf5ff;" />
+                          </div>
                           <div>
                             <label style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #059669; display: block; margin-bottom: 0.3rem;">
                               <span class="material-icons-outlined" style="font-size: 0.85rem; vertical-align: middle;">shopping_cart</span>
@@ -7850,16 +7914,8 @@ watch(cleaningSelectedDate, () => {
                         </div>
 
                         <div style="margin-top: 0.75rem;">
-                          <label style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #dc2626; display: block; margin-bottom: 0.3rem;">
-                            <span class="material-icons-outlined" style="font-size: 0.85rem; vertical-align: middle;">payments</span>
-                            Advance Paid (€)
-                          </label>
-                          <input v-model.number="editAssignmentForm.advance_amount" type="number" min="0" step="0.01" placeholder="0.00" style="padding: 0.6rem; border: 1px solid #fecaca; border-radius: 8px; font-size: 0.9rem; width: 100%; background: #fff5f5;" />
-                        </div>
-
-                        <div style="margin-top: 0.75rem;">
                           <label style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: #64748b; display: block; margin-bottom: 0.3rem;">Description / Note (applies to all above)</label>
-                          <input v-model="editAssignmentForm.expense_description" type="text" placeholder="e.g. Detergent, advance for transport..." style="padding: 0.6rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.85rem; width: 100%;" />
+                          <input v-model="editAssignmentForm.expense_description" type="text" placeholder="e.g. Detergent, laundry tokens..." style="padding: 0.6rem; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.85rem; width: 100%;" />
                         </div>
                       </div>
 
