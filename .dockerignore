@@ -1,5 +1,7 @@
 # Secrets
 .env
+client_secret.json
+service_account.json
 
 # Dependencies (npm install will run in Docker)
 node_modules/
